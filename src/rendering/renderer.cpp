@@ -1054,18 +1054,13 @@ void Renderer::endFrame() {
 
     vkCmdEndRenderPass(currentCmd);
 
-    // Only capture scene history when water surfaces exist (avoids GPU crash on WMO-only maps
-    // where scene history images may never be properly used but layout transitions still run)
-    if (waterRenderer && waterRenderer->hasSurfaces() && currentImageIndex < vkCtx->getSwapchainImages().size()) {
-        waterRenderer->captureSceneHistory(
-            currentCmd,
-            vkCtx->getSwapchainImages()[currentImageIndex],
-            vkCtx->getDepthCopySourceImage(),
-            vkCtx->getSwapchainExtent(),
-            vkCtx->isDepthCopySourceMsaa());
-    }
+    // Scene-history capture is disabled: with MAX_FRAMES_IN_FLIGHT=2, the single
+    // sceneColorImage can race between frame N-1's water shader read and frame N's
+    // transfer write, eventually causing VK_ERROR_DEVICE_LOST.  Water renders
+    // without refraction until per-frame scene-history images are implemented.
+    // TODO: allocate per-frame sceneColor/Depth images to fix the race.
 
-    // Render water in separate 1x pass after MSAA resolve + scene capture
+    // Render water in separate 1x pass (without scene refraction for now)
     bool waterDeferred = waterRenderer && waterRenderer->hasSurfaces() && waterRenderer->hasWater1xPass()
                          && vkCtx->getMsaaSamples() != VK_SAMPLE_COUNT_1_BIT;
     if (waterDeferred && camera) {
