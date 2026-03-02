@@ -320,6 +320,10 @@ void TerrainRenderer::shutdown() {
 bool TerrainRenderer::loadTerrain(const pipeline::TerrainMesh& mesh,
                                    const std::vector<std::string>& texturePaths,
                                    int tileX, int tileY) {
+    if (mesh.validChunkCount == 0) {
+        LOG_WARNING("loadTerrain[", tileX, ",", tileY, "]: mesh has 0 valid chunks (", texturePaths.size(), " textures)");
+        return false;
+    }
     LOG_DEBUG("Loading terrain mesh: ", mesh.validChunkCount, " chunks");
 
     for (int y = 0; y < 16; y++) {

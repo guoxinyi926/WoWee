@@ -912,8 +912,8 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
         // Commit tile to loadedTiles
         auto tile = std::make_unique<TerrainTile>();
         tile->coord = coord;
-        tile->terrain = std::move(pending->terrain);
-        tile->mesh = std::move(pending->mesh);
+        tile->terrain = pending->terrain;   // copy (not move) — pending is cached for reuse
+        tile->mesh = pending->mesh;           // copy (not move) — pending is cached for reuse
         tile->loaded = true;
         tile->m2InstanceIds = std::move(ft.m2InstanceIds);
         tile->wmoInstanceIds = std::move(ft.wmoInstanceIds);
@@ -1357,7 +1357,16 @@ void TerrainManager::softReset() {
     finalizingTiles_.clear();
     placedDoodadIds.clear();
 
-    LOG_INFO("Soft-resetting terrain (clearing tiles + water, workers stay alive)");
+    // Clear tile cache — keys are (x,y) without map name, so stale entries from
+    // a different map with overlapping coordinates would produce wrong geometry.
+    {
+        std::lock_guard<std::mutex> lock(tileCacheMutex_);
+        tileCache_.clear();
+        tileCacheLru_.clear();
+        tileCacheBytes_ = 0;
+    }
+
+    LOG_INFO("Soft-resetting terrain (clearing tiles + water + cache, workers stay alive)");
     loadedTiles.clear();
     failedTiles.clear();
 

@@ -977,6 +977,10 @@ void Renderer::beginFrame() {
     // Update per-frame UBO with current camera/lighting state
     updatePerFrameUBO();
 
+    // GPU crash diagnostic: skip all pre-passes to isolate crash source
+    static const bool skipPrePasses = (std::getenv("WOWEE_SKIP_PREPASSES") != nullptr);
+
+    if (!skipPrePasses) {
     // --- Off-screen pre-passes (before main render pass) ---
     // Minimap composite (renders 3x3 tile grid into 768x768 render target)
     if (minimap && minimap->isEnabled() && camera) {
@@ -1004,6 +1008,7 @@ void Renderer::beginFrame() {
 
     // Water reflection pre-pass (renders scene from mirrored camera into 512x512 texture)
     renderReflectionPass();
+    } // !skipPrePasses
 
     // --- Begin main render pass (clear color + depth) ---
     VkRenderPassBeginInfo rpInfo{};
@@ -1049,7 +1054,9 @@ void Renderer::endFrame() {
 
     vkCmdEndRenderPass(currentCmd);
 
-    if (waterRenderer && currentImageIndex < vkCtx->getSwapchainImages().size()) {
+    // Only capture scene history when water surfaces exist (avoids GPU crash on WMO-only maps
+    // where scene history images may never be properly used but layout transitions still run)
+    if (waterRenderer && waterRenderer->hasSurfaces() && currentImageIndex < vkCtx->getSwapchainImages().size()) {
         waterRenderer->captureSceneHistory(
             currentCmd,
             vkCtx->getSwapchainImages()[currentImageIndex],
@@ -1059,7 +1066,7 @@ void Renderer::endFrame() {
     }
 
     // Render water in separate 1x pass after MSAA resolve + scene capture
-    bool waterDeferred = waterRenderer && waterRenderer->hasWater1xPass()
+    bool waterDeferred = waterRenderer && waterRenderer->hasSurfaces() && waterRenderer->hasWater1xPass()
                          && vkCtx->getMsaaSamples() != VK_SAMPLE_COUNT_1_BIT;
     if (waterDeferred && camera) {
         VkExtent2D ext = vkCtx->getSwapchainExtent();
@@ -3183,11 +3190,18 @@ void Renderer::renderWorld(game::World* world, game::GameHandler* gameHandler) {
     const glm::mat4& view = camera ? camera->getViewMatrix() : glm::mat4(1.0f);
     const glm::mat4& projection = camera ? camera->getProjectionMatrix() : glm::mat4(1.0f);
 
+    // GPU crash diagnostic: skip individual renderers to isolate which one faults
+    static const bool skipWMO = (std::getenv("WOWEE_SKIP_WMO") != nullptr);
+    static const bool skipChars = (std::getenv("WOWEE_SKIP_CHARS") != nullptr);
+    static const bool skipM2 = (std::getenv("WOWEE_SKIP_M2") != nullptr);
+    static const bool skipTerrain = (std::getenv("WOWEE_SKIP_TERRAIN") != nullptr);
+    static const bool skipSky = (std::getenv("WOWEE_SKIP_SKY") != nullptr);
+
     // Get time of day for sky-related rendering
     float timeOfDay = (skySystem && skySystem->getSkybox()) ? skySystem->getSkybox()->getTimeOfDay() : 12.0f;
 
     // Render sky system (unified coordinator for skybox, stars, celestial, clouds, lens flare)
-    if (skySystem && camera) {
+    if (skySystem && camera && !skipSky) {
         rendering::SkyParams skyParams;
         skyParams.timeOfDay = timeOfDay;
         skyParams.gameTime = gameHandler ? gameHandler->getGameTime() : -1.0f;
@@ -3216,13 +3230,8 @@ void Renderer::renderWorld(game::World* world, game::GameHandler* gameHandler) {
         skySystem->render(currentCmd, perFrameSet, *camera, skyParams);
     }
 
-    // GPU crash diagnostic: skip individual renderers to isolate which one faults
-    static const bool skipWMO = (std::getenv("WOWEE_SKIP_WMO") != nullptr);
-    static const bool skipChars = (std::getenv("WOWEE_SKIP_CHARS") != nullptr);
-    static const bool skipM2 = (std::getenv("WOWEE_SKIP_M2") != nullptr);
-
     // Terrain (opaque pass)
-    if (terrainRenderer && camera && terrainEnabled) {
+    if (terrainRenderer && camera && terrainEnabled && !skipTerrain) {
         auto terrainStart = std::chrono::steady_clock::now();
         terrainRenderer->render(currentCmd, perFrameSet, *camera);
         lastTerrainRenderMs = std::chrono::duration<double, std::milli>(
