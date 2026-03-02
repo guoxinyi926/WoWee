@@ -1499,6 +1499,9 @@ void WMORenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const
                 if (groupDistSq < LOD_SHELL_DIST_SQ) continue;
             }
 
+            // Skip groups with invalid GPU resources
+            if (group.vertexBuffer == VK_NULL_HANDLE || group.indexBuffer == VK_NULL_HANDLE) continue;
+
             // Bind vertex + index buffers
             VkDeviceSize offset = 0;
             vkCmdBindVertexBuffers(cmd, 0, 1, &group.vertexBuffer, &offset);
@@ -1522,6 +1525,7 @@ void WMORenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const
                     VkPipeline targetPipeline = activePipeline;
                     if (neededPipeline == 1) targetPipeline = transparentPipeline_;
                     else if (neededPipeline == 2) targetPipeline = glassPipeline_;
+                    if (targetPipeline == VK_NULL_HANDLE) continue;
 
                     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, targetPipeline);
                     currentPipelineKind = neededPipeline;
@@ -1533,6 +1537,7 @@ void WMORenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const
 
                 // Issue draw calls for each range in this merged batch
                 for (const auto& dr : mb.draws) {
+                    if (dr.indexCount == 0) continue;
                     vkCmdDrawIndexed(cmd, dr.indexCount, 1, dr.firstIndex, 0, 0);
                     lastDrawCalls++;
                 }
