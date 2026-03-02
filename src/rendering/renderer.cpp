@@ -946,6 +946,7 @@ void Renderer::applyMsaaChange() {
 
 void Renderer::beginFrame() {
     if (!vkCtx) return;
+    if (vkCtx->isDeviceLost()) return;
 
     // Apply deferred MSAA change between frames (before any rendering state is used)
     if (msaaChangePending_) {

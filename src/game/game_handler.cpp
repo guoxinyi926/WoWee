@@ -3456,6 +3456,12 @@ void GameHandler::handleLoginVerifyWorld(network::Packet& packet) {
         mountCallback_(0);
     }
 
+    // Suppress area triggers on initial login — prevents exit portals from
+    // immediately firing when spawning inside a dungeon/instance.
+    activeAreaTriggers_.clear();
+    areaTriggerCheckTimer_ = -5.0f;
+    areaTriggerSuppressFirst_ = true;
+
     // Send CMSG_SET_ACTIVE_MOVER (required by some servers)
     if (playerGuid != 0 && socket) {
         auto activeMoverPacket = SetActiveMoverPacket::build(playerGuid);

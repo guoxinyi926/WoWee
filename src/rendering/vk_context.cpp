@@ -1297,6 +1297,8 @@ bool VkContext::recreateSwapchain(int width, int height) {
 }
 
 VkCommandBuffer VkContext::beginFrame(uint32_t& imageIndex) {
+    if (deviceLost_) return VK_NULL_HANDLE;
+
     auto& frame = frames[currentFrame];
 
     // Wait for this frame's fence (with timeout to detect GPU hangs)
@@ -1309,6 +1311,9 @@ VkCommandBuffer VkContext::beginFrame(uint32_t& imageIndex) {
     }
     if (fenceResult != VK_SUCCESS) {
         LOG_ERROR("beginFrame[", beginFrameCounter, "] fence wait failed: ", (int)fenceResult);
+        if (fenceResult == VK_ERROR_DEVICE_LOST) {
+            deviceLost_ = true;
+        }
         return VK_NULL_HANDLE;
     }
 
@@ -1363,6 +1368,9 @@ void VkContext::endFrame(VkCommandBuffer cmd, uint32_t imageIndex) {
     VkResult submitResult = vkQueueSubmit(graphicsQueue, 1, &submitInfo, frame.inFlightFence);
     if (submitResult != VK_SUCCESS) {
         LOG_ERROR("endFrame[", endFrameCounter, "] vkQueueSubmit FAILED: ", (int)submitResult);
+        if (submitResult == VK_ERROR_DEVICE_LOST) {
+            deviceLost_ = true;
+        }
     }
 
     VkPresentInfoKHR presentInfo{};
