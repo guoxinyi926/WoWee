@@ -19,11 +19,11 @@ Protocol Compatible with **Vanilla (Classic) 1.12 + TBC 2.4.3 + WotLK 3.3.5a**.
 
 > **Legal Disclaimer**: This is an educational/research project. It does not include any Blizzard Entertainment assets, data files, or proprietary code. World of Warcraft and all related assets are the property of Blizzard Entertainment, Inc. This project is not affiliated with or endorsed by Blizzard Entertainment. Users are responsible for supplying their own legally obtained game data files and for ensuring compliance with all applicable laws in their jurisdiction.
 
-## Status & Direction (2026-02-18)
+## Status & Direction (2026-03-07)
 
 - **Compatibility**: **Vanilla (Classic) 1.12 + TBC 2.4.3 + WotLK 3.3.5a** are all supported via expansion profiles and per-expansion packet parsers (`src/game/packet_parsers_classic.cpp`, `src/game/packet_parsers_tbc.cpp`). All three expansions are roughly on par — no single one is significantly more complete than the others.
 - **Tested against**: AzerothCore, TrinityCore, and Mangos.
-- **Current focus**: protocol correctness across server variants, visual accuracy (M2/WMO edge cases, equipment textures), and multi-expansion coverage.
+- **Current focus**: protocol correctness across server variants, visual accuracy (M2/WMO edge cases, lava/water rendering, equipment textures), and multi-expansion coverage.
 - **Warden**: Full module execution via Unicorn Engine CPU emulation. Decrypts (RC4→RSA→zlib), parses and relocates the PE module, executes via x86 emulation with Windows API interception. Module cache at `~/.local/share/wowee/warden_cache/`.
 
 ## Features
@@ -33,7 +33,9 @@ Protocol Compatible with **Vanilla (Classic) 1.12 + TBC 2.4.3 + WotLK 3.3.5a**.
 - **Atmosphere** -- Procedural clouds (FBM noise), lens flare with chromatic aberration, cloud/fog star occlusion
 - **Characters** -- Skeletal animation with GPU vertex skinning (256 bones), race-aware textures
 - **Buildings** -- WMO renderer with multi-material batches, frustum culling, 160-unit distance culling
-- **Particles** -- M2 particle emitters with WotLK struct parsing, billboarded glow effects
+- **Water & Lava** -- Terrain and WMO water with refraction/reflection, magma/slime rendering with fbm noise flow, Beer-Lambert absorption
+- **Particles** -- M2 particle emitters with WotLK struct parsing, billboarded glow effects, lava steam/splash effects
+- **Lighting** -- Shadow mapping with PCF, interior/exterior light modes, WMO window glass with fresnel reflections
 
 ### Asset Pipeline
 - Extracted loose-file **`Data/`** tree indexed by **`manifest.json`** (fast lookup + caching)
@@ -44,7 +46,7 @@ Protocol Compatible with **Vanilla (Classic) 1.12 + TBC 2.4.3 + WotLK 3.3.5a**.
 ### Gameplay Systems
 - **Authentication** -- Full SRP6a implementation with RC4 header encryption
 - **Character System** -- Creation (with nonbinary gender option), selection, 3D preview, stats panel, race/class support
-- **Movement** -- WASD movement, camera orbit, spline path following
+- **Movement** -- WASD movement, camera orbit, spline path following, transport riding (trams, ships, zeppelins)
 - **Combat** -- Auto-attack, spell casting with cooldowns, damage calculation, death handling
 - **Targeting** -- Tab-cycling, click-to-target, faction-based hostility (using Faction.dbc)
 - **Inventory** -- 23 equipment slots, 16 backpack slots, drag-drop, auto-equip

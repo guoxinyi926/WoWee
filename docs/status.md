@@ -1,6 +1,6 @@
 # Project Status
 
-**Last updated**: 2026-02-19
+**Last updated**: 2026-03-07
 
 ## What This Repo Is
 
@@ -11,7 +11,7 @@ Wowee is a native C++ World of Warcraft client experiment focused on connecting 
 Implemented (working in normal use):
 
 - Auth flow: SRP6a auth + realm list + world connect with header encryption
-- Rendering: terrain, WMO/M2 rendering, water, sky system, particles, minimap/world map, loading video playback
+- Rendering: terrain, WMO/M2 rendering, water/magma/slime, sky system, particles, shadow mapping, minimap/world map, loading video playback
 - Character system: creation (including nonbinary gender), selection, 3D preview with equipment, character screen
 - Core gameplay: movement, targeting, combat, action bar, inventory/equipment, chat (tabs/channels, emotes, item links)
 - Quests: quest markers (! and ?) on NPCs/minimap, quest log with detail queries/retry, objective tracking, accept/complete flow, turn-in
@@ -25,9 +25,10 @@ Implemented (working in normal use):
 
 In progress / known gaps:
 
-- Transports (ships, zeppelins, elevators): partial support, timing and edge cases still buggy
+- Transports: M2 transports (trams) working with position-delta riding; WMO transports (ships, zeppelins) working with path following; some edge cases remain
 - 3D positional audio: not implemented (mono/stereo only)
 - Visual edge cases: some M2/WMO rendering gaps (character shin mesh, some particle effects)
+- Interior rendering: WMO interior shadows disabled (too dark); lava steam particles sparse
 
 ## Where To Look
 
