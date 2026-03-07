@@ -3428,10 +3428,15 @@ void Application::loadOnlineWorldTerrain(uint32_t mapId, float x, float y, float
     glm::vec3 spawnCanonical = core::coords::serverToCanonical(glm::vec3(x, y, z));
     glm::vec3 spawnRender = core::coords::canonicalToRender(spawnCanonical);
 
-    // Set camera position
+    // Set camera position and facing from server orientation
     if (renderer->getCameraController()) {
+        float yawDeg = 0.0f;
+        if (gameHandler) {
+            float canonicalYaw = gameHandler->getMovementInfo().orientation;
+            yawDeg = 180.0f - glm::degrees(canonicalYaw);
+        }
         renderer->getCameraController()->setOnlineMode(true);
-        renderer->getCameraController()->setDefaultSpawn(spawnRender, 0.0f, -15.0f);
+        renderer->getCameraController()->setDefaultSpawn(spawnRender, yawDeg, -15.0f);
         renderer->getCameraController()->reset();
     }
 

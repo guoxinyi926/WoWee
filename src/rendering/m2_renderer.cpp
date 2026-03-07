@@ -1116,9 +1116,24 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
         // Ground clutter (grass/pebbles/detail cards) should never block camera/movement.
         gpuModel.collisionNoBlock = true;
     }
-    // Spell effect models: particle-dominated with minimal geometry (e.g. LevelUp.m2)
-    gpuModel.isSpellEffect = hasParticles && model.vertices.size() <= 200 &&
-                              model.particleEmitters.size() >= 3;
+    // Spell effect / pure-visual models: particle-dominated with minimal geometry,
+    // or named effect models (light shafts, portals, emitters, spotlights)
+    bool effectByName =
+        (lowerName.find("lightshaft") != std::string::npos) ||
+        (lowerName.find("volumetriclight") != std::string::npos) ||
+        (lowerName.find("instanceportal") != std::string::npos) ||
+        (lowerName.find("mageportal") != std::string::npos) ||
+        (lowerName.find("worldtreeportal") != std::string::npos) ||
+        (lowerName.find("particleemitter") != std::string::npos) ||
+        (lowerName.find("bubbles") != std::string::npos) ||
+        (lowerName.find("spotlight") != std::string::npos) ||
+        (lowerName.find("hazardlight") != std::string::npos) ||
+        (lowerName.find("lavasplash") != std::string::npos) ||
+        (lowerName.find("lavabubble") != std::string::npos) ||
+        (lowerName.find("wisps") != std::string::npos);
+    gpuModel.isSpellEffect = effectByName ||
+                              (hasParticles && model.vertices.size() <= 200 &&
+                               model.particleEmitters.size() >= 3);
     // Water vegetation: cattails, reeds, bulrushes, kelp, seaweed, lilypad near water
     gpuModel.isWaterVegetation =
         (lowerName.find("cattail") != std::string::npos) ||
@@ -2381,8 +2396,14 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
 
             // Select pipeline based on blend mode
             uint8_t effectiveBlendMode = batch.blendMode;
-            if (model.isSpellEffect && (effectiveBlendMode == 4 || effectiveBlendMode == 5)) {
-                effectiveBlendMode = 3;
+            if (model.isSpellEffect) {
+                // Effect models: force additive blend for opaque/cutout batches
+                // so the mesh renders as a transparent glow, not a solid object
+                if (effectiveBlendMode <= 1) {
+                    effectiveBlendMode = 3;  // additive
+                } else if (effectiveBlendMode == 4 || effectiveBlendMode == 5) {
+                    effectiveBlendMode = 3;
+                }
             }
             if (forceCutout) {
                 effectiveBlendMode = 1;

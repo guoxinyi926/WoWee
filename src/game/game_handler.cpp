@@ -8814,16 +8814,16 @@ void GameHandler::checkAreaTriggers() {
 
         bool inside = false;
         if (at.radius > 0.0f) {
-            // Sphere trigger — small minimum so player must be near the portal
-            float effectiveRadius = std::max(at.radius, 12.0f);
+            // Sphere trigger — use actual radius, with small floor for very tiny triggers
+            float effectiveRadius = std::max(at.radius, 3.0f);
             float dx = px - at.x;
             float dy = py - at.y;
             float dz = pz - at.z;
             float distSq = dx * dx + dy * dy + dz * dz;
             inside = (distSq <= effectiveRadius * effectiveRadius);
         } else if (at.boxLength > 0.0f || at.boxWidth > 0.0f || at.boxHeight > 0.0f) {
-            // Box trigger — small minimum so player must walk into the portal area
-            float boxMin = 16.0f;
+            // Box trigger — use actual size, with small floor for tiny triggers
+            float boxMin = 4.0f;
             float effLength = std::max(at.boxLength, boxMin);
             float effWidth = std::max(at.boxWidth, boxMin);
             float effHeight = std::max(at.boxHeight, boxMin);
