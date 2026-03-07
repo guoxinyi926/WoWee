@@ -6568,6 +6568,7 @@ void Application::spawnOnlineGameObject(uint64_t guid, uint32_t entry, uint32_t 
         std::string lowerPath = modelPath;
         std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::tolower);
         bool isAnimatedEffect = (lowerPath.find("instanceportal") != std::string::npos ||
+                                  lowerPath.find("instancenewportal") != std::string::npos ||
                                   lowerPath.find("portalfx") != std::string::npos ||
                                   lowerPath.find("spellportal") != std::string::npos);
         if (!isAnimatedEffect) {

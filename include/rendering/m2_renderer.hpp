@@ -112,6 +112,7 @@ struct M2ModelGPU {
     bool hasAnimation = false;  // True if any bone has keyframes
     bool isSmoke = false;       // True for smoke models (UV scroll animation)
     bool isSpellEffect = false;  // True for spell effect models (skip particle dampeners)
+    bool isInstancePortal = false; // Instance portal model (spin + glow)
     bool disableAnimation = false; // Keep foliage/tree doodads visually stable
     bool shadowWindFoliage = false; // Apply wind sway in shadow pass for foliage/tree cards
     bool isFoliageLike = false;     // Model name matches foliage/tree/bush/grass etc (precomputed)
@@ -181,9 +182,11 @@ struct M2Instance {
     bool cachedHasParticleEmitters = false;
     bool cachedIsGroundDetail = false;
     bool cachedIsInvisibleTrap = false;
+    bool cachedIsInstancePortal = false;
     bool cachedIsValid = false;
     bool skipCollision = false;    // WMO interior doodads — skip player wall collision
     float cachedBoundRadius = 0.0f;
+    float portalSpinAngle = 0.0f;  // Accumulated spin angle for portal rotation
 
     // Frame-skip optimization (update distant animations less frequently)
     uint8_t frameSkipCounter = 0;
@@ -476,6 +479,7 @@ private:
     // Smoke particle system
     std::vector<SmokeParticle> smokeParticles;
     std::vector<size_t> smokeInstanceIndices_;  // Indices into instances[] for smoke emitters
+    std::vector<size_t> portalInstanceIndices_; // Indices into instances[] for spinning portals
     static constexpr int MAX_SMOKE_PARTICLES = 1000;
     float smokeEmitAccum = 0.0f;
     std::mt19937 smokeRng{42};

@@ -1122,6 +1122,7 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
         (lowerName.find("lightshaft") != std::string::npos) ||
         (lowerName.find("volumetriclight") != std::string::npos) ||
         (lowerName.find("instanceportal") != std::string::npos) ||
+        (lowerName.find("instancenewportal") != std::string::npos) ||
         (lowerName.find("mageportal") != std::string::npos) ||
         (lowerName.find("worldtreeportal") != std::string::npos) ||
         (lowerName.find("particleemitter") != std::string::npos) ||
@@ -1134,6 +1135,15 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
     gpuModel.isSpellEffect = effectByName ||
                               (hasParticles && model.vertices.size() <= 200 &&
                                model.particleEmitters.size() >= 3);
+    gpuModel.isInstancePortal =
+        (lowerName.find("instanceportal") != std::string::npos) ||
+        (lowerName.find("instancenewportal") != std::string::npos) ||
+        (lowerName.find("portalfx") != std::string::npos) ||
+        (lowerName.find("spellportal") != std::string::npos);
+    // Instance portals are spell effects too (additive blend, no collision)
+    if (gpuModel.isInstancePortal) {
+        gpuModel.isSpellEffect = true;
+    }
     // Water vegetation: cattails, reeds, bulrushes, kelp, seaweed, lilypad near water
     gpuModel.isWaterVegetation =
         (lowerName.find("cattail") != std::string::npos) ||
@@ -1634,6 +1644,7 @@ uint32_t M2Renderer::createInstance(uint32_t modelId, const glm::vec3& position,
     instance.cachedBoundRadius = mdlRef.boundRadius;
     instance.cachedIsGroundDetail = mdlRef.isGroundDetail;
     instance.cachedIsInvisibleTrap = mdlRef.isInvisibleTrap;
+    instance.cachedIsInstancePortal = mdlRef.isInstancePortal;
     instance.cachedIsValid = mdlRef.isValid();
 
     // Initialize animation: play first sequence (usually Stand/Idle)
@@ -1651,6 +1662,9 @@ uint32_t M2Renderer::createInstance(uint32_t modelId, const glm::vec3& position,
     // Track special instances for fast-path iteration
     if (mdlRef.isSmoke) {
         smokeInstanceIndices_.push_back(idx);
+    }
+    if (mdlRef.isInstancePortal) {
+        portalInstanceIndices_.push_back(idx);
     }
     if (!mdlRef.particleEmitters.empty()) {
         particleInstanceIndices_.push_back(idx);
@@ -1939,6 +1953,18 @@ void M2Renderer::update(float deltaTime, const glm::vec3& cameraPos, const glm::
         float t = p.life / p.maxLife;
         p.size = 1.0f + t * 2.5f;
         ++i;
+    }
+
+    // --- Spin instance portals ---
+    static constexpr float PORTAL_SPIN_SPEED = 1.2f; // radians/sec
+    for (size_t idx : portalInstanceIndices_) {
+        if (idx >= instances.size()) continue;
+        auto& inst = instances[idx];
+        inst.portalSpinAngle += PORTAL_SPIN_SPEED * deltaTime;
+        if (inst.portalSpinAngle > 6.2831853f)
+            inst.portalSpinAngle -= 6.2831853f;
+        inst.rotation.z = inst.portalSpinAngle;
+        inst.updateModelMatrix();
     }
 
     // --- Normal M2 animation update ---
@@ -2250,6 +2276,22 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
         float instanceFadeAlpha = fadeAlpha;
         if (model.isGroundDetail) {
             instanceFadeAlpha *= 0.82f;
+        }
+        if (model.isInstancePortal) {
+            // Render mesh at low alpha + emit glow sprite at center
+            instanceFadeAlpha *= 0.12f;
+            if (entry.distSq < 400.0f * 400.0f) {
+                glm::vec3 center = glm::vec3(instance.modelMatrix * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
+                GlowSprite gs;
+                gs.worldPos = center;
+                gs.color = glm::vec4(0.35f, 0.5f, 1.0f, 1.1f);
+                gs.size = instance.scale * 5.0f;
+                glowSprites_.push_back(gs);
+                GlowSprite halo = gs;
+                halo.color.a *= 0.3f;
+                halo.size *= 2.2f;
+                glowSprites_.push_back(halo);
+            }
         }
 
         // Upload bone matrices to SSBO if model has skeletal animation
@@ -3419,6 +3461,7 @@ void M2Renderer::clear() {
     instanceIndexById.clear();
     smokeParticles.clear();
     smokeInstanceIndices_.clear();
+    portalInstanceIndices_.clear();
     animatedInstanceIndices_.clear();
     particleOnlyInstanceIndices_.clear();
     particleInstanceIndices_.clear();
@@ -3454,6 +3497,7 @@ void M2Renderer::rebuildSpatialIndex() {
     instanceIndexById.clear();
     instanceIndexById.reserve(instances.size());
     smokeInstanceIndices_.clear();
+    portalInstanceIndices_.clear();
     animatedInstanceIndices_.clear();
     particleOnlyInstanceIndices_.clear();
     particleInstanceIndices_.clear();
@@ -3464,6 +3508,9 @@ void M2Renderer::rebuildSpatialIndex() {
 
         if (inst.cachedIsSmoke) {
             smokeInstanceIndices_.push_back(i);
+        }
+        if (inst.cachedIsInstancePortal) {
+            portalInstanceIndices_.push_back(i);
         }
         if (inst.cachedHasParticleEmitters) {
             particleInstanceIndices_.push_back(i);
