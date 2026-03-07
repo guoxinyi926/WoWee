@@ -1,5 +1,6 @@
 #pragma once
 
+#include "pipeline/blp_loader.hpp"
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
 #include <glm/glm.hpp>
@@ -325,6 +326,12 @@ public:
     // Pre-compute floor cache for all loaded WMO instances
     void precomputeFloorCache();
 
+    // Pre-decoded BLP cache: set before calling loadModel() to skip main-thread BLP decode
+    void setPredecodedBLPCache(std::unordered_map<std::string, pipeline::BLPImage>* cache) { predecodedBLPCache_ = cache; }
+
+    // Defer normal/height map generation during streaming to avoid CPU stalls
+    void setDeferNormalMaps(bool defer) { deferNormalMaps_ = defer; }
+
 private:
     // WMO material UBO — matches WMOMaterial in wmo.frag.glsl
     struct WMOMaterialUBO {
@@ -558,6 +565,7 @@ private:
      * Load a texture from path
      */
     VkTexture* loadTexture(const std::string& path);
+    std::unordered_map<std::string, pipeline::BLPImage>* predecodedBLPCache_ = nullptr;
 
     /**
      * Generate normal+height map from diffuse RGBA8 pixels
@@ -670,6 +678,7 @@ private:
 
     // Normal mapping / POM settings
     bool normalMappingEnabled_ = true;   // on by default
+    bool deferNormalMaps_ = false;       // skip normal map gen during streaming
     float normalMapStrength_ = 0.8f;     // 0.0 = flat, 1.0 = full, 2.0 = exaggerated
     bool pomEnabled_ = true;             // on by default
     int pomQuality_ = 1;                 // 0=Low(16), 1=Medium(32), 2=High(64)

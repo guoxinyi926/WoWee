@@ -625,7 +625,18 @@ VkTexture* CharacterRenderer::loadTexture(const std::string& path) {
         return whiteTexture_.get();
     }
 
-    auto blpImage = assetManager->loadTexture(key);
+    // Check pre-decoded BLP cache first (populated by background threads)
+    pipeline::BLPImage blpImage;
+    if (predecodedBLPCache_) {
+        auto pit = predecodedBLPCache_->find(key);
+        if (pit != predecodedBLPCache_->end()) {
+            blpImage = std::move(pit->second);
+            predecodedBLPCache_->erase(pit);
+        }
+    }
+    if (!blpImage.isValid()) {
+        blpImage = assetManager->loadTexture(key);
+    }
     if (!blpImage.isValid()) {
         // Return white fallback but don't cache the failure — allow retry
         // on next character load in case the asset becomes available.
@@ -1412,8 +1423,9 @@ uint32_t CharacterRenderer::createInstance(uint32_t modelId, const glm::vec3& po
     instance.scale = scale;
 
     // Initialize bone matrices to identity
-    auto& model = models[modelId].data;
-    instance.boneMatrices.resize(std::max(static_cast<size_t>(1), model.bones.size()), glm::mat4(1.0f));
+    auto& gpuRef = models[modelId];
+    instance.boneMatrices.resize(std::max(static_cast<size_t>(1), gpuRef.data.bones.size()), glm::mat4(1.0f));
+    instance.cachedModel = &gpuRef;
 
     uint32_t id = instance.id;
     instances[id] = std::move(instance);
@@ -1511,13 +1523,12 @@ void CharacterRenderer::update(float deltaTime, const glm::vec3& cameraPos) {
         if (distSq >= animUpdateRadiusSq) continue;
 
         // Always advance animation time (cheap)
-        auto modelIt = models.find(inst.modelId);
-        if (modelIt != models.end() && !modelIt->second.data.sequences.empty()) {
+        if (inst.cachedModel && !inst.cachedModel->data.sequences.empty()) {
             if (inst.currentSequenceIndex < 0) {
                 inst.currentSequenceIndex = 0;
-                inst.currentAnimationId = modelIt->second.data.sequences[0].id;
+                inst.currentAnimationId = inst.cachedModel->data.sequences[0].id;
             }
-            const auto& seq = modelIt->second.data.sequences[inst.currentSequenceIndex];
+            const auto& seq = inst.cachedModel->data.sequences[inst.currentSequenceIndex];
             inst.animationTime += deltaTime * 1000.0f;
             if (seq.duration > 0 && inst.animationTime >= static_cast<float>(seq.duration)) {
                 if (inst.animationLoop) {
@@ -1528,10 +1539,11 @@ void CharacterRenderer::update(float deltaTime, const glm::vec3& cameraPos) {
             }
         }
 
-        // Distance-tiered bone throttling: near=every frame, mid=every 3rd, far=every 6th
+        // Distance-tiered bone throttling: near=every frame, mid=every 4th, far=every 8th
         uint32_t boneInterval = 1;
-        if (distSq > 60.0f * 60.0f) boneInterval = 6;
-        else if (distSq > 30.0f * 30.0f) boneInterval = 3;
+        if (distSq > 40.0f * 40.0f) boneInterval = 8;
+        else if (distSq > 20.0f * 20.0f) boneInterval = 4;
+        else if (distSq > 10.0f * 10.0f) boneInterval = 2;
 
         inst.boneUpdateCounter++;
         bool needsBones = (inst.boneUpdateCounter >= boneInterval) || inst.boneMatrices.empty();
@@ -1615,11 +1627,8 @@ void CharacterRenderer::update(float deltaTime, const glm::vec3& cameraPos) {
 }
 
 void CharacterRenderer::updateAnimation(CharacterInstance& instance, float deltaTime) {
-    auto modelIt = models.find(instance.modelId);
-    if (modelIt == models.end()) {
-        return;
-    }
-    const auto& model = modelIt->second.data;
+    if (!instance.cachedModel) return;
+    const auto& model = instance.cachedModel->data;
 
     if (model.sequences.empty()) {
         return;
@@ -1732,7 +1741,8 @@ glm::quat CharacterRenderer::interpolateQuat(const pipeline::M2AnimationTrack& t
 // --- Bone transform calculation ---
 
 void CharacterRenderer::calculateBoneMatrices(CharacterInstance& instance) {
-    auto& model = models[instance.modelId].data;
+    if (!instance.cachedModel) return;
+    auto& model = instance.cachedModel->data;
 
     if (model.bones.empty()) {
         return;
@@ -1833,9 +1843,8 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
             }
         }
 
-        auto modelIt = models.find(instance.modelId);
-        if (modelIt == models.end()) continue;
-        const auto& gpuModel = modelIt->second;
+        if (!instance.cachedModel) continue;
+        const auto& gpuModel = *instance.cachedModel;
 
         // Skip models without GPU buffers
         if (!gpuModel.vertexBuffer) continue;
@@ -2487,9 +2496,8 @@ void CharacterRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& light
         glm::vec3 diff = inst.position - shadowCenter;
         if (glm::dot(diff, diff) > shadowRadiusSq) continue;
 
-        auto modelIt = models.find(inst.modelId);
-        if (modelIt == models.end()) continue;
-        const M2ModelGPU& gpuModel = modelIt->second;
+        if (!inst.cachedModel) continue;
+        const M2ModelGPU& gpuModel = *inst.cachedModel;
         if (!gpuModel.vertexBuffer) continue;
 
         glm::mat4 modelMat = inst.hasOverrideModelMatrix

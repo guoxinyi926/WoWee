@@ -231,9 +231,14 @@ bool TerrainManager::loadTile(int x, int y) {
         return false;
     }
 
+    VkContext* vkCtx = terrainRenderer ? terrainRenderer->getVkContext() : nullptr;
+    if (vkCtx) vkCtx->beginUploadBatch();
+
     FinalizingTile ft;
     ft.pending = std::move(pending);
     while (!advanceFinalization(ft)) {}
+
+    if (vkCtx) vkCtx->endUploadBatchSync();  // Sync — caller expects tile ready
     return true;
 }
 
@@ -405,6 +410,20 @@ std::shared_ptr<PendingTile> TerrainManager::prepareTile(int x, int y) {
             skippedInvalid++;
             LOG_DEBUG("M2 model invalid (no verts/indices): ", m2Path);
             return false;
+        }
+
+        // Pre-decode M2 model textures on background thread
+        for (const auto& tex : m2Model.textures) {
+            if (tex.filename.empty()) continue;
+            std::string texKey = tex.filename;
+            std::replace(texKey.begin(), texKey.end(), '/', '\\');
+            std::transform(texKey.begin(), texKey.end(), texKey.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (pending->preloadedM2Textures.find(texKey) != pending->preloadedM2Textures.end()) continue;
+            auto blp = assetManager->loadTexture(texKey);
+            if (blp.isValid()) {
+                pending->preloadedM2Textures[texKey] = std::move(blp);
+            }
         }
 
         PendingTile::M2Ready ready;
@@ -584,6 +603,20 @@ std::shared_ptr<PendingTile> TerrainManager::prepareTile(int x, int y) {
                                 pipeline::M2Loader::loadSkin(skinData, m2Model);
                             }
                             if (!m2Model.isValid()) continue;
+
+                            // Pre-decode doodad M2 textures on background thread
+                            for (const auto& tex : m2Model.textures) {
+                                if (tex.filename.empty()) continue;
+                                std::string texKey = tex.filename;
+                                std::replace(texKey.begin(), texKey.end(), '/', '\\');
+                                std::transform(texKey.begin(), texKey.end(), texKey.begin(),
+                                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                                if (pending->preloadedM2Textures.find(texKey) != pending->preloadedM2Textures.end()) continue;
+                                auto blp = assetManager->loadTexture(texKey);
+                                if (blp.isValid()) {
+                                    pending->preloadedM2Textures[texKey] = std::move(blp);
+                                }
+                            }
                         }
 
                         // Build doodad's local transform (WoW coordinates)
@@ -651,6 +684,32 @@ std::shared_ptr<PendingTile> TerrainManager::prepareTile(int x, int y) {
                         doodadReady.modelMatrix = worldMatrix;
                         pending->wmoDoodads.push_back(std::move(doodadReady));
                     }
+                    }
+                }
+
+                // Pre-decode WMO textures on background thread
+                for (const auto& texPath : wmoModel.textures) {
+                    if (texPath.empty()) continue;
+                    std::string texKey = texPath;
+                    // Truncate at NUL (WMO paths can have stray bytes)
+                    size_t nul = texKey.find('\0');
+                    if (nul != std::string::npos) texKey.resize(nul);
+                    std::replace(texKey.begin(), texKey.end(), '/', '\\');
+                    std::transform(texKey.begin(), texKey.end(), texKey.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    if (texKey.empty()) continue;
+                    if (pending->preloadedWMOTextures.find(texKey) != pending->preloadedWMOTextures.end()) continue;
+                    // Try .blp variant
+                    std::string blpKey = texKey;
+                    if (blpKey.size() >= 4) {
+                        std::string ext = blpKey.substr(blpKey.size() - 4);
+                        if (ext == ".tga" || ext == ".dds") {
+                            blpKey = blpKey.substr(0, blpKey.size() - 4) + ".blp";
+                        }
+                    }
+                    auto blp = assetManager->loadTexture(blpKey);
+                    if (blp.isValid()) {
+                        pending->preloadedWMOTextures[blpKey] = std::move(blp);
                     }
                 }
 
@@ -741,7 +800,7 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
             }
             bool allDone = terrainRenderer->loadTerrainIncremental(
                 pending->mesh, pending->terrain.textures, x, y,
-                ft.terrainChunkNext, 64);
+                ft.terrainChunkNext, 32);
             if (!allDone) {
                 return false; // More chunks remain — yield to time budget
             }
@@ -773,7 +832,9 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
     case FinalizationPhase::M2_MODELS: {
         // Upload multiple M2 models per call (batched GPU uploads)
         if (m2Renderer && ft.m2ModelIndex < pending->m2Models.size()) {
-            constexpr size_t kModelsPerStep = 8;
+            // Set pre-decoded BLP cache so loadTexture() skips main-thread BLP decode
+            m2Renderer->setPredecodedBLPCache(&pending->preloadedM2Textures);
+            constexpr size_t kModelsPerStep = 4;
             size_t uploaded = 0;
             while (ft.m2ModelIndex < pending->m2Models.size() && uploaded < kModelsPerStep) {
                 auto& m2Ready = pending->m2Models[ft.m2ModelIndex];
@@ -786,6 +847,7 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
                 ft.m2ModelIndex++;
                 uploaded++;
             }
+            m2Renderer->setPredecodedBLPCache(nullptr);
             // Stay in this phase until all models uploaded
             if (ft.m2ModelIndex < pending->m2Models.size()) {
                 return false;
@@ -830,8 +892,11 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
         // Upload multiple WMO models per call (batched GPU uploads)
         if (wmoRenderer && assetManager) {
             wmoRenderer->initialize(nullptr, VK_NULL_HANDLE, assetManager);
+            // Set pre-decoded BLP cache and defer normal maps during streaming
+            wmoRenderer->setPredecodedBLPCache(&pending->preloadedWMOTextures);
+            wmoRenderer->setDeferNormalMaps(true);
 
-            constexpr size_t kWmosPerStep = 4;
+            constexpr size_t kWmosPerStep = 1;
             size_t uploaded = 0;
             while (ft.wmoModelIndex < pending->wmoModels.size() && uploaded < kWmosPerStep) {
                 auto& wmoReady = pending->wmoModels[ft.wmoModelIndex];
@@ -843,6 +908,8 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
                     uploaded++;
                 }
             }
+            wmoRenderer->setDeferNormalMaps(false);
+            wmoRenderer->setPredecodedBLPCache(nullptr);
             if (ft.wmoModelIndex < pending->wmoModels.size()) return false;
         }
         ft.phase = FinalizationPhase::WMO_INSTANCES;
@@ -906,7 +973,9 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
     case FinalizationPhase::WMO_DOODADS: {
         // Upload multiple WMO doodad M2s per call (batched GPU uploads)
         if (m2Renderer && ft.wmoDoodadIndex < pending->wmoDoodads.size()) {
-            constexpr size_t kDoodadsPerStep = 16;
+            // Set pre-decoded BLP cache for doodad M2 textures
+            m2Renderer->setPredecodedBLPCache(&pending->preloadedM2Textures);
+            constexpr size_t kDoodadsPerStep = 4;
             size_t uploaded = 0;
             while (ft.wmoDoodadIndex < pending->wmoDoodads.size() && uploaded < kDoodadsPerStep) {
                 auto& doodad = pending->wmoDoodads[ft.wmoDoodadIndex];
@@ -923,6 +992,7 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
                 ft.wmoDoodadIndex++;
                 uploaded++;
             }
+            m2Renderer->setPredecodedBLPCache(nullptr);
             if (ft.wmoDoodadIndex < pending->wmoDoodads.size()) return false;
         }
         ft.phase = FinalizationPhase::WATER;
@@ -1080,11 +1150,6 @@ void TerrainManager::workerLoop() {
 }
 
 void TerrainManager::processReadyTiles() {
-    // Process tiles with time budget to avoid frame spikes
-    // Taxi mode gets a slightly larger budget to avoid visible late-pop terrain/models.
-    const float timeBudgetMs = taxiStreamingMode_ ? 8.0f : 3.0f;
-    auto startTime = std::chrono::high_resolution_clock::now();
-
     // Move newly ready tiles into the finalizing deque.
     // Keep them in pendingTiles so streamTiles() won't re-enqueue them.
     {
@@ -1100,28 +1165,32 @@ void TerrainManager::processReadyTiles() {
         }
     }
 
-    // Outer upload batch: all GPU uploads across all advanceFinalization calls
-    // this frame share a single command buffer submission + fence wait.
     VkContext* vkCtx = terrainRenderer ? terrainRenderer->getVkContext() : nullptr;
+
+    // Reclaim completed async uploads from previous frames (non-blocking)
+    if (vkCtx) vkCtx->pollUploadBatches();
+
+    // Nothing to finalize — done.
+    if (finalizingTiles_.empty()) return;
+
+    // Async upload batch: record GPU copies into a command buffer, submit with
+    // a fence, but DON'T wait.  The fence is polled on subsequent frames.
+    // This eliminates the main-thread stall from vkWaitForFences entirely.
+    const int maxSteps = taxiStreamingMode_ ? 8 : 2;
+    int steps = 0;
+
     if (vkCtx) vkCtx->beginUploadBatch();
 
-    // Drive incremental finalization within time budget
-    while (!finalizingTiles_.empty()) {
+    while (!finalizingTiles_.empty() && steps < maxSteps) {
         auto& ft = finalizingTiles_.front();
         bool done = advanceFinalization(ft);
-
         if (done) {
             finalizingTiles_.pop_front();
         }
-
-        auto now = std::chrono::high_resolution_clock::now();
-        float elapsedMs = std::chrono::duration<float, std::milli>(now - startTime).count();
-        if (elapsedMs >= timeBudgetMs) {
-            break;
-        }
+        steps++;
     }
 
-    if (vkCtx) vkCtx->endUploadBatch();
+    if (vkCtx) vkCtx->endUploadBatch();  // Async — submits but doesn't wait
 }
 
 void TerrainManager::processAllReadyTiles() {
@@ -1151,7 +1220,7 @@ void TerrainManager::processAllReadyTiles() {
         finalizingTiles_.pop_front();
     }
 
-    if (vkCtx) vkCtx->endUploadBatch();
+    if (vkCtx) vkCtx->endUploadBatchSync();  // Sync — load screen needs data ready
 }
 
 void TerrainManager::processOneReadyTile() {
@@ -1177,7 +1246,7 @@ void TerrainManager::processOneReadyTile() {
         while (!advanceFinalization(ft)) {}
         finalizingTiles_.pop_front();
 
-        if (vkCtx) vkCtx->endUploadBatch();
+        if (vkCtx) vkCtx->endUploadBatchSync();  // Sync — load screen needs data ready
     }
 }
 

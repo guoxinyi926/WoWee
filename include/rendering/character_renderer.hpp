@@ -1,6 +1,7 @@
 #pragma once
 
 #include "pipeline/m2_loader.hpp"
+#include "pipeline/blp_loader.hpp"
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
 #include <glm/glm.hpp>
@@ -114,7 +115,11 @@ public:
     void setShadowMap(VkTexture*, const glm::mat4&) {}
     void clearShadowMap() {}
 
+    // Pre-decoded BLP cache: set before calling loadModel() to skip main-thread BLP decode
+    void setPredecodedBLPCache(std::unordered_map<std::string, pipeline::BLPImage>* cache) { predecodedBLPCache_ = cache; }
+
 private:
+    std::unordered_map<std::string, pipeline::BLPImage>* predecodedBLPCache_ = nullptr;
     // GPU representation of M2 model
     struct M2ModelGPU {
         VkBuffer vertexBuffer = VK_NULL_HANDLE;
@@ -180,6 +185,7 @@ private:
 
         // Bone update throttling (skip frames for distant characters)
         uint32_t boneUpdateCounter = 0;
+        const M2ModelGPU* cachedModel = nullptr;  // Avoid per-frame hash lookups
 
         // Per-instance bone SSBO (double-buffered per frame)
         VkBuffer boneBuffer[2] = {};

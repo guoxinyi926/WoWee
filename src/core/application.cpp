@@ -6883,7 +6883,7 @@ void Application::spawnOnlineGameObject(uint64_t guid, uint32_t entry, uint32_t 
 void Application::processAsyncCreatureResults() {
     // Check completed async model loads and finalize on main thread (GPU upload + instance creation).
     // Limit GPU model uploads per frame to avoid spikes, but always drain cheap bookkeeping.
-    static constexpr int kMaxModelUploadsPerFrame = 3;
+    static constexpr int kMaxModelUploadsPerFrame = 1;
     int modelUploads = 0;
 
     for (auto it = asyncCreatureLoads_.begin(); it != asyncCreatureLoads_.end(); ) {
@@ -6925,13 +6925,17 @@ void Application::processAsyncCreatureResults() {
         }
 
         // Upload model to GPU (must happen on main thread)
+        // Use pre-decoded BLP cache to skip main-thread texture decode
+        charRenderer->setPredecodedBLPCache(&result.predecodedTextures);
         if (!charRenderer->loadModel(*result.model, result.modelId)) {
+            charRenderer->setPredecodedBLPCache(nullptr);
             nonRenderableCreatureDisplayIds_.insert(result.displayId);
             creaturePermanentFailureGuids_.insert(result.guid);
             pendingCreatureSpawnGuids_.erase(result.guid);
             creatureSpawnRetryCounts_.erase(result.guid);
             continue;
         }
+        charRenderer->setPredecodedBLPCache(nullptr);
         displayIdModelCache_[result.displayId] = result.modelId;
         modelUploads++;
 
@@ -6956,6 +6960,10 @@ void Application::processAsyncCreatureResults() {
 }
 
 void Application::processCreatureSpawnQueue() {
+    auto startTime = std::chrono::steady_clock::now();
+    // Budget: max 2ms per frame for creature spawning to prevent stutter.
+    static constexpr float kSpawnBudgetMs = 2.0f;
+
     // First, finalize any async model loads that completed on background threads.
     processAsyncCreatureResults();
 
@@ -6965,18 +6973,15 @@ void Application::processCreatureSpawnQueue() {
         if (!creatureLookupsBuilt_) return;
     }
 
-    auto startTime = std::chrono::steady_clock::now();
-    // Budget: max 4ms per frame for creature spawning to prevent stutter.
-    static constexpr float kSpawnBudgetMs = 4.0f;
-
     int processed = 0;
     int asyncLaunched = 0;
     size_t rotationsLeft = pendingCreatureSpawns_.size();
     while (!pendingCreatureSpawns_.empty() &&
            processed < MAX_SPAWNS_PER_FRAME &&
            rotationsLeft > 0) {
-        // Check time budget after each spawn (not for the first one, always process at least 1)
-        if (processed > 0) {
+        // Check time budget every iteration (including first — async results may
+        // have already consumed the budget via GPU model uploads).
+        {
             auto now = std::chrono::steady_clock::now();
             float elapsedMs = std::chrono::duration<float, std::milli>(now - startTime).count();
             if (elapsedMs >= kSpawnBudgetMs) break;
@@ -7081,6 +7086,20 @@ void Application::processCreatureSpawnQueue() {
                         }
                     }
 
+                    // Pre-decode model textures on background thread
+                    for (const auto& tex : model->textures) {
+                        if (tex.filename.empty()) continue;
+                        std::string texKey = tex.filename;
+                        std::replace(texKey.begin(), texKey.end(), '/', '\\');
+                        std::transform(texKey.begin(), texKey.end(), texKey.begin(),
+                                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                        if (result.predecodedTextures.find(texKey) != result.predecodedTextures.end()) continue;
+                        auto blp = am->loadTexture(texKey);
+                        if (blp.isValid()) {
+                            result.predecodedTextures[texKey] = std::move(blp);
+                        }
+                    }
+
                     result.model = std::move(model);
                     result.valid = true;
                     return result;
@@ -7161,14 +7180,202 @@ void Application::processDeferredEquipmentQueue() {
     setOnlinePlayerEquipment(guid, equipData.first, equipData.second);
 }
 
+void Application::processAsyncGameObjectResults() {
+    for (auto it = asyncGameObjectLoads_.begin(); it != asyncGameObjectLoads_.end(); ) {
+        if (!it->future.valid() ||
+            it->future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+            ++it;
+            continue;
+        }
+
+        auto result = it->future.get();
+        it = asyncGameObjectLoads_.erase(it);
+
+        if (!result.valid || !result.isWmo || !result.wmoModel) {
+            // Fallback: spawn via sync path (likely an M2 or failed WMO)
+            spawnOnlineGameObject(result.guid, result.entry, result.displayId,
+                                 result.x, result.y, result.z, result.orientation);
+            continue;
+        }
+
+        // WMO parsed on background thread — do GPU upload + instance creation on main thread
+        auto* wmoRenderer = renderer ? renderer->getWMORenderer() : nullptr;
+        if (!wmoRenderer) continue;
+
+        uint32_t modelId = 0;
+        auto itCache = gameObjectDisplayIdWmoCache_.find(result.displayId);
+        if (itCache != gameObjectDisplayIdWmoCache_.end()) {
+            modelId = itCache->second;
+        } else {
+            modelId = nextGameObjectWmoModelId_++;
+            wmoRenderer->setPredecodedBLPCache(&result.predecodedTextures);
+            if (!wmoRenderer->loadModel(*result.wmoModel, modelId)) {
+                wmoRenderer->setPredecodedBLPCache(nullptr);
+                LOG_WARNING("Failed to load async gameobject WMO: ", result.modelPath);
+                continue;
+            }
+            wmoRenderer->setPredecodedBLPCache(nullptr);
+            gameObjectDisplayIdWmoCache_[result.displayId] = modelId;
+        }
+
+        glm::vec3 renderPos = core::coords::canonicalToRender(
+            glm::vec3(result.x, result.y, result.z));
+        uint32_t instanceId = wmoRenderer->createInstance(
+            modelId, renderPos, glm::vec3(0.0f, 0.0f, result.orientation), 1.0f);
+        if (instanceId == 0) continue;
+
+        gameObjectInstances_[result.guid] = {modelId, instanceId, true};
+
+        // Queue transport doodad loading if applicable
+        std::string lowerPath = result.modelPath;
+        std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lowerPath.find("transport") != std::string::npos) {
+            const auto* doodadTemplates = wmoRenderer->getDoodadTemplates(modelId);
+            if (doodadTemplates && !doodadTemplates->empty()) {
+                PendingTransportDoodadBatch batch;
+                batch.guid = result.guid;
+                batch.modelId = modelId;
+                batch.instanceId = instanceId;
+                batch.x = result.x;
+                batch.y = result.y;
+                batch.z = result.z;
+                batch.orientation = result.orientation;
+                batch.doodadBudget = doodadTemplates->size();
+                pendingTransportDoodadBatches_.push_back(batch);
+            }
+        }
+    }
+}
+
 void Application::processGameObjectSpawnQueue() {
+    // Finalize any completed async WMO loads first
+    processAsyncGameObjectResults();
+
     if (pendingGameObjectSpawns_.empty()) return;
 
-    // Only spawn 1 game object per frame — each can involve heavy synchronous
-    // WMO loading (root + groups from disk + GPU upload), easily 100ms+.
-    auto& s = pendingGameObjectSpawns_.front();
-    spawnOnlineGameObject(s.guid, s.entry, s.displayId, s.x, s.y, s.z, s.orientation);
-    pendingGameObjectSpawns_.erase(pendingGameObjectSpawns_.begin());
+    // Process spawns: cached WMOs and M2s go sync (cheap), uncached WMOs go async
+    auto startTime = std::chrono::steady_clock::now();
+    static constexpr float kBudgetMs = 2.0f;
+    static constexpr int kMaxAsyncLoads = 2;
+
+    while (!pendingGameObjectSpawns_.empty()) {
+        float elapsedMs = std::chrono::duration<float, std::milli>(
+            std::chrono::steady_clock::now() - startTime).count();
+        if (elapsedMs >= kBudgetMs) break;
+
+        auto& s = pendingGameObjectSpawns_.front();
+
+        // Check if this is an uncached WMO that needs async loading
+        std::string modelPath;
+        if (gameObjectLookupsBuilt_) {
+            // Check transport overrides first
+            bool isTransport = gameHandler && gameHandler->isTransportGuid(s.guid);
+            if (isTransport) {
+                if (s.entry == 20808 || s.entry == 176231 || s.entry == 176310)
+                    modelPath = "World\\wmo\\transports\\transport_ship\\transportship.wmo";
+                else if (s.displayId == 807 || s.displayId == 808 || s.displayId == 175080 || s.displayId == 176495 || s.displayId == 164871)
+                    modelPath = "World\\wmo\\transports\\transport_zeppelin\\transport_zeppelin.wmo";
+                else if (s.displayId == 1587)
+                    modelPath = "World\\wmo\\transports\\transport_horde_zeppelin\\Transport_Horde_Zeppelin.wmo";
+                else if (s.displayId == 2454 || s.displayId == 181688 || s.displayId == 190536)
+                    modelPath = "World\\wmo\\transports\\icebreaker\\Transport_Icebreaker_ship.wmo";
+            }
+            if (modelPath.empty())
+                modelPath = getGameObjectModelPathForDisplayId(s.displayId);
+        }
+
+        std::string lowerPath = modelPath;
+        std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        bool isWmo = lowerPath.size() >= 4 && lowerPath.substr(lowerPath.size() - 4) == ".wmo";
+        bool isCached = isWmo && gameObjectDisplayIdWmoCache_.count(s.displayId);
+
+        if (isWmo && !isCached && !modelPath.empty() &&
+            static_cast<int>(asyncGameObjectLoads_.size()) < kMaxAsyncLoads) {
+            // Launch async WMO load — file I/O + parse on background thread
+            auto* am = assetManager.get();
+            PendingGameObjectSpawn capture = s;
+            std::string capturePath = modelPath;
+            AsyncGameObjectLoad load;
+            load.future = std::async(std::launch::async,
+                [am, capture, capturePath]() -> PreparedGameObjectWMO {
+                    PreparedGameObjectWMO result;
+                    result.guid = capture.guid;
+                    result.entry = capture.entry;
+                    result.displayId = capture.displayId;
+                    result.x = capture.x;
+                    result.y = capture.y;
+                    result.z = capture.z;
+                    result.orientation = capture.orientation;
+                    result.modelPath = capturePath;
+                    result.isWmo = true;
+
+                    auto wmoData = am->readFile(capturePath);
+                    if (wmoData.empty()) return result;
+
+                    auto wmo = std::make_shared<pipeline::WMOModel>(
+                        pipeline::WMOLoader::load(wmoData));
+
+                    // Load groups
+                    if (wmo->nGroups > 0) {
+                        std::string basePath = capturePath;
+                        std::string ext;
+                        if (basePath.size() > 4) {
+                            ext = basePath.substr(basePath.size() - 4);
+                            basePath = basePath.substr(0, basePath.size() - 4);
+                        }
+                        for (uint32_t gi = 0; gi < wmo->nGroups; gi++) {
+                            char suffix[16];
+                            snprintf(suffix, sizeof(suffix), "_%03u%s", gi, ext.c_str());
+                            auto groupData = am->readFile(basePath + suffix);
+                            if (groupData.empty()) {
+                                snprintf(suffix, sizeof(suffix), "_%03u.wmo", gi);
+                                groupData = am->readFile(basePath + suffix);
+                            }
+                            if (!groupData.empty()) {
+                                pipeline::WMOLoader::loadGroup(groupData, *wmo, gi);
+                            }
+                        }
+                    }
+
+                    // Pre-decode WMO textures on background thread
+                    for (const auto& texPath : wmo->textures) {
+                        if (texPath.empty()) continue;
+                        std::string texKey = texPath;
+                        size_t nul = texKey.find('\0');
+                        if (nul != std::string::npos) texKey.resize(nul);
+                        std::replace(texKey.begin(), texKey.end(), '/', '\\');
+                        std::transform(texKey.begin(), texKey.end(), texKey.begin(),
+                                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                        if (texKey.empty()) continue;
+                        // Convert to .blp extension
+                        if (texKey.size() >= 4) {
+                            std::string ext = texKey.substr(texKey.size() - 4);
+                            if (ext == ".tga" || ext == ".dds") {
+                                texKey = texKey.substr(0, texKey.size() - 4) + ".blp";
+                            }
+                        }
+                        if (result.predecodedTextures.find(texKey) != result.predecodedTextures.end()) continue;
+                        auto blp = am->loadTexture(texKey);
+                        if (blp.isValid()) {
+                            result.predecodedTextures[texKey] = std::move(blp);
+                        }
+                    }
+
+                    result.wmoModel = wmo;
+                    result.valid = true;
+                    return result;
+                });
+            asyncGameObjectLoads_.push_back(std::move(load));
+            pendingGameObjectSpawns_.erase(pendingGameObjectSpawns_.begin());
+            continue;
+        }
+
+        // Cached WMO or M2 — spawn synchronously (cheap)
+        spawnOnlineGameObject(s.guid, s.entry, s.displayId, s.x, s.y, s.z, s.orientation);
+        pendingGameObjectSpawns_.erase(pendingGameObjectSpawns_.begin());
+    }
 }
 
 void Application::processPendingTransportDoodads() {

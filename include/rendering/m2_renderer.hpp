@@ -1,6 +1,7 @@
 #pragma once
 
 #include "pipeline/m2_loader.hpp"
+#include "pipeline/blp_loader.hpp"
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
 #include <glm/glm.hpp>
@@ -188,6 +189,7 @@ struct M2Instance {
     bool skipCollision = false;    // WMO interior doodads — skip player wall collision
     float cachedBoundRadius = 0.0f;
     float portalSpinAngle = 0.0f;  // Accumulated spin angle for portal rotation
+    const M2ModelGPU* cachedModel = nullptr;  // Avoid per-frame hash lookups
 
     // Frame-skip optimization (update distant animations less frequently)
     uint8_t frameSkipCounter = 0;
@@ -328,6 +330,10 @@ public:
 
     std::vector<glm::vec3> getWaterVegetationPositions(const glm::vec3& camPos, float maxDist) const;
 
+    // Pre-decoded BLP cache: set by terrain manager before calling loadModel()
+    // so loadTexture() can skip the expensive assetManager->loadTexture() call.
+    void setPredecodedBLPCache(std::unordered_map<std::string, pipeline::BLPImage>* cache) { predecodedBLPCache_ = cache; }
+
 private:
     bool initialized_ = false;
     bool insideInterior = false;
@@ -414,6 +420,8 @@ private:
     uint32_t modelLimitRejectWarnings_ = 0;
 
     VkTexture* loadTexture(const std::string& path, uint32_t texFlags = 0);
+    std::unordered_map<std::string, pipeline::BLPImage>* predecodedBLPCache_ = nullptr;
+
     struct TextureCacheEntry {
         std::unique_ptr<VkTexture> texture;
         size_t approxBytes = 0;

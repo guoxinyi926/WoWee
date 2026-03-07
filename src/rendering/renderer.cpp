@@ -2434,6 +2434,9 @@ void Renderer::update(float deltaTime) {
         cameraController->update(deltaTime);
         auto cameraEnd = std::chrono::steady_clock::now();
         lastCameraUpdateMs = std::chrono::duration<double, std::milli>(cameraEnd - cameraStart).count();
+        if (lastCameraUpdateMs > 3.0) {
+            LOG_WARNING("SLOW cameraController->update: ", lastCameraUpdateMs, "ms");
+        }
 
         // Update 3D audio listener position/orientation to match camera
         if (camera) {
@@ -2779,8 +2782,15 @@ void Renderer::update(float deltaTime) {
 
     // Update M2 doodad animations (pass camera for frustum-culling bone computation)
     if (m2Renderer && camera) {
+        auto m2Start = std::chrono::steady_clock::now();
         m2Renderer->update(deltaTime, camera->getPosition(),
                            camera->getProjectionMatrix() * camera->getViewMatrix());
+        float m2Ms = std::chrono::duration<float, std::milli>(
+            std::chrono::steady_clock::now() - m2Start).count();
+        if (m2Ms > 3.0f) {
+            LOG_WARNING("SLOW m2Renderer->update: ", m2Ms, "ms (",
+                        m2Renderer->getInstanceCount(), " instances)");
+        }
     }
 
     // Helper: play zone music, dispatching local files (file: prefix) vs MPQ paths

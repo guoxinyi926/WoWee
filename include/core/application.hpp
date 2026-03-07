@@ -3,6 +3,7 @@
 #include "core/window.hpp"
 #include "core/input.hpp"
 #include "game/character.hpp"
+#include "pipeline/blp_loader.hpp"
 #include <memory>
 #include <string>
 #include <vector>
@@ -23,7 +24,7 @@ namespace rendering { class Renderer; }
 namespace ui { class UIManager; }
 namespace auth { class AuthHandler; }
 namespace game { class GameHandler; class World; class ExpansionRegistry; }
-namespace pipeline { class AssetManager; class DBCLayout; struct M2Model; }
+namespace pipeline { class AssetManager; class DBCLayout; struct M2Model; struct WMOModel; }
 namespace audio { enum class VoiceType; }
 
 namespace core {
@@ -206,6 +207,7 @@ private:
         uint32_t modelId;
         float x, y, z, orientation;
         std::shared_ptr<pipeline::M2Model> model; // parsed on background thread
+        std::unordered_map<std::string, pipeline::BLPImage> predecodedTextures; // decoded on bg thread
         bool valid = false;
         bool permanent_failure = false;
     };
@@ -337,6 +339,24 @@ private:
     };
     std::vector<PendingGameObjectSpawn> pendingGameObjectSpawns_;
     void processGameObjectSpawnQueue();
+
+    // Async WMO loading for game objects (file I/O + parse on background thread)
+    struct PreparedGameObjectWMO {
+        uint64_t guid;
+        uint32_t entry;
+        uint32_t displayId;
+        float x, y, z, orientation;
+        std::shared_ptr<pipeline::WMOModel> wmoModel;
+        std::unordered_map<std::string, pipeline::BLPImage> predecodedTextures; // decoded on bg thread
+        bool valid = false;
+        bool isWmo = false;
+        std::string modelPath;
+    };
+    struct AsyncGameObjectLoad {
+        std::future<PreparedGameObjectWMO> future;
+    };
+    std::vector<AsyncGameObjectLoad> asyncGameObjectLoads_;
+    void processAsyncGameObjectResults();
     struct PendingTransportDoodadBatch {
         uint64_t guid = 0;
         uint32_t modelId = 0;

@@ -121,6 +121,12 @@ struct PendingTile {
     // Pre-loaded terrain texture BLP data (loaded on background thread to avoid
     // blocking file I/O on the main thread during finalizeTile)
     std::unordered_map<std::string, pipeline::BLPImage> preloadedTextures;
+
+    // Pre-decoded M2 model textures (decoded on background thread)
+    std::unordered_map<std::string, pipeline::BLPImage> preloadedM2Textures;
+
+    // Pre-decoded WMO textures (decoded on background thread)
+    std::unordered_map<std::string, pipeline::BLPImage> preloadedWMOTextures;
 };
 
 /**

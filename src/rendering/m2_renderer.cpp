@@ -1657,6 +1657,7 @@ uint32_t M2Renderer::createInstance(uint32_t modelId, const glm::vec3& position,
     instance.cachedIsInvisibleTrap = mdlRef.isInvisibleTrap;
     instance.cachedIsInstancePortal = mdlRef.isInstancePortal;
     instance.cachedIsValid = mdlRef.isValid();
+    instance.cachedModel = &mdlRef;
 
     // Initialize animation: play first sequence (usually Stand/Idle)
     const auto& mdl = mdlRef;
@@ -1748,6 +1749,7 @@ uint32_t M2Renderer::createInstanceWithMatrix(uint32_t modelId, const glm::mat4&
     instance.cachedIsGroundDetail = mdl2.isGroundDetail;
     instance.cachedIsInvisibleTrap = mdl2.isInvisibleTrap;
     instance.cachedIsValid = mdl2.isValid();
+    instance.cachedModel = &mdl2;
 
     // Initialize animation
     if (mdl2.hasAnimation && !mdl2.disableAnimation && !mdl2.sequences.empty()) {
@@ -2026,9 +2028,8 @@ void M2Renderer::update(float deltaTime, const glm::vec3& cameraPos, const glm::
         instance.animTime += dtMs * (instance.animSpeed - 1.0f);
 
         // For animation looping/variation, we need the actual model data.
-        auto it = models.find(instance.modelId);
-        if (it == models.end()) continue;
-        const M2ModelGPU& model = it->second;
+        if (!instance.cachedModel) continue;
+        const M2ModelGPU& model = *instance.cachedModel;
 
         // Validate sequence index
         if (instance.currentSequenceIndex < 0 ||
@@ -2084,6 +2085,14 @@ void M2Renderer::update(float deltaTime, const glm::vec3& cameraPos, const glm::
         float paddedRadius = std::max(cullRadius * 1.5f, cullRadius + 3.0f);
         if (cullRadius > 0.0f && !updateFrustum.intersectsSphere(instance.position, paddedRadius)) continue;
 
+        // Distance-based frame skipping: update distant bones less frequently
+        uint32_t boneInterval = 1;
+        if (distSq > 200.0f * 200.0f) boneInterval = 8;
+        else if (distSq > 100.0f * 100.0f) boneInterval = 4;
+        else if (distSq > 50.0f * 50.0f) boneInterval = 2;
+        instance.frameSkipCounter++;
+        if ((instance.frameSkipCounter % boneInterval) != 0) continue;
+
         boneWorkIndices_.push_back(idx);
     }
 
@@ -2097,9 +2106,8 @@ void M2Renderer::update(float deltaTime, const glm::vec3& cameraPos, const glm::
             for (size_t i : boneWorkIndices_) {
                 if (i >= instances.size()) continue;
                 auto& inst = instances[i];
-                auto mdlIt = models.find(inst.modelId);
-                if (mdlIt == models.end()) continue;
-                computeBoneMatrices(mdlIt->second, inst);
+                if (!inst.cachedModel) continue;
+                computeBoneMatrices(*inst.cachedModel, inst);
             }
         } else {
             // Parallel — dispatch across worker threads
@@ -2112,9 +2120,8 @@ void M2Renderer::update(float deltaTime, const glm::vec3& cameraPos, const glm::
                 for (size_t i : boneWorkIndices_) {
                     if (i >= instances.size()) continue;
                     auto& inst = instances[i];
-                    auto mdlIt = models.find(inst.modelId);
-                    if (mdlIt == models.end()) continue;
-                    computeBoneMatrices(mdlIt->second, inst);
+                    if (!inst.cachedModel) continue;
+                    computeBoneMatrices(*inst.cachedModel, inst);
                 }
             } else {
                 const size_t chunkSize = animCount / numThreads;
@@ -2135,9 +2142,8 @@ void M2Renderer::update(float deltaTime, const glm::vec3& cameraPos, const glm::
                                 size_t idx = boneWorkIndices_[j];
                                 if (idx >= instances.size()) continue;
                                 auto& inst = instances[idx];
-                                auto mdlIt = models.find(inst.modelId);
-                                if (mdlIt == models.end()) continue;
-                                computeBoneMatrices(mdlIt->second, inst);
+                                if (!inst.cachedModel) continue;
+                                computeBoneMatrices(*inst.cachedModel, inst);
                             }
                         }));
                     start = end;
@@ -2159,9 +2165,8 @@ void M2Renderer::update(float deltaTime, const glm::vec3& cameraPos, const glm::
         glm::vec3 toCam = instance.position - cachedCamPos_;
         float distSq = glm::dot(toCam, toCam);
         if (distSq > cachedMaxRenderDistSq_) continue;
-        auto mdlIt = models.find(instance.modelId);
-        if (mdlIt == models.end()) continue;
-        emitParticles(instance, mdlIt->second, deltaTime);
+        if (!instance.cachedModel) continue;
+        emitParticles(instance, *instance.cachedModel, deltaTime);
         updateParticles(instance, deltaTime);
     }
 
@@ -2865,9 +2870,8 @@ void M2Renderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMa
             glm::vec3 diff = instance.position - shadowCenter;
             if (glm::dot(diff, diff) > shadowRadiusSq) continue;
 
-            auto modelIt = models.find(instance.modelId);
-            if (modelIt == models.end()) continue;
-            const M2ModelGPU& model = modelIt->second;
+            if (!instance.cachedModel) continue;
+            const M2ModelGPU& model = *instance.cachedModel;
 
             // Filter: only draw foliage models in foliage pass, non-foliage in non-foliage pass
             if (model.shadowWindFoliage != foliagePass) continue;
@@ -2973,8 +2977,7 @@ std::vector<glm::vec3> M2Renderer::getWaterVegetationPositions(const glm::vec3& 
     std::vector<glm::vec3> result;
     float maxDistSq = maxDist * maxDist;
     for (const auto& inst : instances) {
-        auto it = models.find(inst.modelId);
-        if (it == models.end() || !it->second.isWaterVegetation) continue;
+        if (!inst.cachedModel || !inst.cachedModel->isWaterVegetation) continue;
         glm::vec3 diff = inst.position - camPos;
         if (glm::dot(diff, diff) <= maxDistSq) {
             result.push_back(inst.position);
@@ -3085,9 +3088,8 @@ void M2Renderer::emitParticles(M2Instance& inst, const M2ModelGPU& gpu, float dt
 }
 
 void M2Renderer::updateParticles(M2Instance& inst, float dt) {
-    auto it = models.find(inst.modelId);
-    if (it == models.end()) return;
-    const auto& gpu = it->second;
+    if (!inst.cachedModel) return;
+    const auto& gpu = *inst.cachedModel;
 
     for (size_t i = 0; i < inst.particles.size(); ) {
         auto& p = inst.particles[i];
@@ -3162,9 +3164,8 @@ void M2Renderer::renderM2Particles(VkCommandBuffer cmd, VkDescriptorSet perFrame
 
     for (auto& inst : instances) {
         if (inst.particles.empty()) continue;
-        auto it = models.find(inst.modelId);
-        if (it == models.end()) continue;
-        const auto& gpu = it->second;
+        if (!inst.cachedModel) continue;
+        const auto& gpu = *inst.cachedModel;
 
         for (const auto& p : inst.particles) {
             if (p.emitterIndex < 0 || p.emitterIndex >= static_cast<int>(gpu.particleEmitters.size())) continue;
@@ -3549,8 +3550,12 @@ void M2Renderer::rebuildSpatialIndex() {
     particleInstanceIndices_.clear();
 
     for (size_t i = 0; i < instances.size(); i++) {
-        const auto& inst = instances[i];
+        auto& inst = instances[i];
         instanceIndexById[inst.id] = i;
+
+        // Re-cache model pointer (may have changed after model map modifications)
+        auto mdlIt = models.find(inst.modelId);
+        inst.cachedModel = (mdlIt != models.end()) ? &mdlIt->second : nullptr;
 
         // Rebuild dedup map (skip ground detail)
         if (!inst.cachedIsGroundDetail) {
@@ -3684,8 +3689,18 @@ VkTexture* M2Renderer::loadTexture(const std::string& path, uint32_t texFlags) {
         containsToken(key, "campfire") ||
         containsToken(key, "bonfire");
 
-    // Load BLP texture
-    pipeline::BLPImage blp = assetManager->loadTexture(key);
+    // Check pre-decoded BLP cache first (populated by background worker threads)
+    pipeline::BLPImage blp;
+    if (predecodedBLPCache_) {
+        auto pit = predecodedBLPCache_->find(key);
+        if (pit != predecodedBLPCache_->end()) {
+            blp = std::move(pit->second);
+            predecodedBLPCache_->erase(pit);
+        }
+    }
+    if (!blp.isValid()) {
+        blp = assetManager->loadTexture(key);
+    }
     if (!blp.isValid()) {
         // Return white fallback but don't cache the failure — MPQ reads can
         // fail transiently during streaming; allow retry on next model load.
@@ -3751,9 +3766,8 @@ VkTexture* M2Renderer::loadTexture(const std::string& path, uint32_t texFlags) {
 uint32_t M2Renderer::getTotalTriangleCount() const {
     uint32_t total = 0;
     for (const auto& instance : instances) {
-        auto it = models.find(instance.modelId);
-        if (it != models.end()) {
-            total += it->second.indexCount / 3;
+        if (instance.cachedModel) {
+            total += instance.cachedModel->indexCount / 3;
         }
     }
     return total;
@@ -3775,11 +3789,10 @@ std::optional<float> M2Renderer::getFloorHeight(float glX, float glY, float glZ,
             continue;
         }
 
-        auto it = models.find(instance.modelId);
-        if (it == models.end()) continue;
+        if (!instance.cachedModel) continue;
         if (instance.scale <= 0.001f) continue;
 
-        const M2ModelGPU& model = it->second;
+        const M2ModelGPU& model = *instance.cachedModel;
         if (model.collisionNoBlock || model.isInvisibleTrap || model.isSpellEffect) continue;
         if (instance.skipCollision) continue;
 
@@ -3931,10 +3944,9 @@ bool M2Renderer::checkCollision(const glm::vec3& from, const glm::vec3& to,
         if (from.z > instance.worldBoundsMax.z + 2.5f && adjustedPos.z > instance.worldBoundsMax.z + 2.5f) continue;
         if (from.z + 2.5f < instance.worldBoundsMin.z && adjustedPos.z + 2.5f < instance.worldBoundsMin.z) continue;
 
-        auto it = models.find(instance.modelId);
-        if (it == models.end()) continue;
+        if (!instance.cachedModel) continue;
 
-        const M2ModelGPU& model = it->second;
+        const M2ModelGPU& model = *instance.cachedModel;
         if (model.collisionNoBlock || model.isInvisibleTrap || model.isSpellEffect) continue;
         if (instance.skipCollision) continue;
         if (instance.scale <= 0.001f) continue;
@@ -4172,10 +4184,9 @@ float M2Renderer::raycastBoundingBoxes(const glm::vec3& origin, const glm::vec3&
             continue;
         }
 
-        auto it = models.find(instance.modelId);
-        if (it == models.end()) continue;
+        if (!instance.cachedModel) continue;
 
-        const M2ModelGPU& model = it->second;
+        const M2ModelGPU& model = *instance.cachedModel;
         if (model.collisionNoBlock || model.isInvisibleTrap || model.isSpellEffect) continue;
         glm::vec3 localMin, localMax;
         getTightCollisionBounds(model, localMin, localMax);

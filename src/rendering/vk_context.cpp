@@ -67,6 +67,14 @@ void VkContext::shutdown() {
         frame = {};
     }
 
+    // Clean up any in-flight async upload batches (device already idle)
+    for (auto& batch : inFlightBatches_) {
+        // Staging buffers: skip destroy — allocator is about to be torn down
+        vkDestroyFence(device, batch.fence, nullptr);
+        // Command buffer freed when pool is destroyed below
+    }
+    inFlightBatches_.clear();
+
     if (immFence) { vkDestroyFence(device, immFence, nullptr); immFence = VK_NULL_HANDLE; }
     if (immCommandPool) { vkDestroyCommandPool(device, immCommandPool, nullptr); immCommandPool = VK_NULL_HANDLE; }
 
@@ -1447,15 +1455,92 @@ void VkContext::endUploadBatch() {
 
     inUploadBatch_ = false;
 
-    // Submit all recorded commands with a single fence wait
+    if (batchStagingBuffers_.empty()) {
+        // No GPU copies were recorded — skip the submit entirely.
+        vkEndCommandBuffer(batchCmd_);
+        vkFreeCommandBuffers(device, immCommandPool, 1, &batchCmd_);
+        batchCmd_ = VK_NULL_HANDLE;
+        return;
+    }
+
+    // Submit commands with a NEW fence — don't wait, let GPU work in parallel.
+    vkEndCommandBuffer(batchCmd_);
+
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    VkFence fence = VK_NULL_HANDLE;
+    vkCreateFence(device, &fenceInfo, nullptr, &fence);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &batchCmd_;
+    vkQueueSubmit(graphicsQueue, 1, &submitInfo, fence);
+
+    // Stash everything for later cleanup when fence signals
+    InFlightBatch batch;
+    batch.fence = fence;
+    batch.cmd = batchCmd_;
+    batch.stagingBuffers = std::move(batchStagingBuffers_);
+    inFlightBatches_.push_back(std::move(batch));
+
+    batchCmd_ = VK_NULL_HANDLE;
+    batchStagingBuffers_.clear();
+}
+
+void VkContext::endUploadBatchSync() {
+    if (uploadBatchDepth_ <= 0) return;
+    uploadBatchDepth_--;
+    if (uploadBatchDepth_ > 0) return;
+
+    inUploadBatch_ = false;
+
+    if (batchStagingBuffers_.empty()) {
+        vkEndCommandBuffer(batchCmd_);
+        vkFreeCommandBuffers(device, immCommandPool, 1, &batchCmd_);
+        batchCmd_ = VK_NULL_HANDLE;
+        return;
+    }
+
+    // Synchronous path for load screens — submit and wait
     endSingleTimeCommands(batchCmd_);
     batchCmd_ = VK_NULL_HANDLE;
 
-    // Destroy all deferred staging buffers
     for (auto& staging : batchStagingBuffers_) {
         destroyBuffer(allocator, staging);
     }
     batchStagingBuffers_.clear();
+}
+
+void VkContext::pollUploadBatches() {
+    if (inFlightBatches_.empty()) return;
+
+    for (auto it = inFlightBatches_.begin(); it != inFlightBatches_.end(); ) {
+        VkResult result = vkGetFenceStatus(device, it->fence);
+        if (result == VK_SUCCESS) {
+            // GPU finished — free resources
+            for (auto& staging : it->stagingBuffers) {
+                destroyBuffer(allocator, staging);
+            }
+            vkFreeCommandBuffers(device, immCommandPool, 1, &it->cmd);
+            vkDestroyFence(device, it->fence, nullptr);
+            it = inFlightBatches_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void VkContext::waitAllUploads() {
+    for (auto& batch : inFlightBatches_) {
+        vkWaitForFences(device, 1, &batch.fence, VK_TRUE, UINT64_MAX);
+        for (auto& staging : batch.stagingBuffers) {
+            destroyBuffer(allocator, staging);
+        }
+        vkFreeCommandBuffers(device, immCommandPool, 1, &batch.cmd);
+        vkDestroyFence(device, batch.fence, nullptr);
+    }
+    inFlightBatches_.clear();
 }
 
 void VkContext::deferStagingCleanup(AllocatedBuffer staging) {

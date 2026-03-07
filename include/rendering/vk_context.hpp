@@ -50,9 +50,12 @@ public:
     // Batch upload mode: records multiple upload commands into a single
     // command buffer, then submits with ONE fence wait instead of one per upload.
     void beginUploadBatch();
-    void endUploadBatch();
+    void endUploadBatch();       // Async: submits but does NOT wait for fence
+    void endUploadBatchSync();   // Sync: submits and waits (for load screens)
     bool isInUploadBatch() const { return inUploadBatch_; }
     void deferStagingCleanup(AllocatedBuffer staging);
+    void pollUploadBatches();    // Check completed async uploads, free staging buffers
+    void waitAllUploads();       // Block until all in-flight uploads complete
 
     // Accessors
     VkInstance getInstance() const { return instance; }
@@ -156,6 +159,14 @@ private:
     bool inUploadBatch_ = false;
     VkCommandBuffer batchCmd_ = VK_NULL_HANDLE;
     std::vector<AllocatedBuffer> batchStagingBuffers_;
+
+    // Async upload: in-flight batches awaiting GPU completion
+    struct InFlightBatch {
+        VkFence fence = VK_NULL_HANDLE;
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        std::vector<AllocatedBuffer> stagingBuffers;
+    };
+    std::vector<InFlightBatch> inFlightBatches_;
 
     // Depth buffer (shared across all framebuffers)
     VkImage depthImage = VK_NULL_HANDLE;

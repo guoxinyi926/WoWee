@@ -2325,13 +2325,27 @@ VkTexture* WMORenderer::loadTexture(const std::string& path) {
     const auto& attemptedCandidates = uniqueCandidates;
 
     // Try loading all candidates until one succeeds
+    // Check pre-decoded BLP cache first (populated by background worker threads)
     pipeline::BLPImage blp;
     std::string resolvedKey;
-    for (const auto& c : attemptedCandidates) {
-        blp = assetManager->loadTexture(c);
-        if (blp.isValid()) {
-            resolvedKey = c;
-            break;
+    if (predecodedBLPCache_) {
+        for (const auto& c : uniqueCandidates) {
+            auto pit = predecodedBLPCache_->find(c);
+            if (pit != predecodedBLPCache_->end()) {
+                blp = std::move(pit->second);
+                predecodedBLPCache_->erase(pit);
+                resolvedKey = c;
+                break;
+            }
+        }
+    }
+    if (!blp.isValid()) {
+        for (const auto& c : attemptedCandidates) {
+            blp = assetManager->loadTexture(c);
+            if (blp.isValid()) {
+                resolvedKey = c;
+                break;
+            }
         }
     }
     if (!blp.isValid()) {
@@ -2369,10 +2383,10 @@ VkTexture* WMORenderer::loadTexture(const std::string& path) {
     texture->createSampler(vkCtx_->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
                             VK_SAMPLER_ADDRESS_MODE_REPEAT);
 
-    // Generate normal+height map from diffuse pixels
+    // Generate normal+height map from diffuse pixels (skip during streaming to avoid CPU stalls)
     float nhVariance = 0.0f;
     std::unique_ptr<VkTexture> nhMap;
-    if (normalMappingEnabled_ || pomEnabled_) {
+    if ((normalMappingEnabled_ || pomEnabled_) && !deferNormalMaps_) {
         nhMap = generateNormalHeightMap(blp.data.data(), blp.width, blp.height, nhVariance);
         if (nhMap) {
             approxBytes *= 2;  // account for normal map in budget
