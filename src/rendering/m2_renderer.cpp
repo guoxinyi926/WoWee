@@ -1687,7 +1687,7 @@ uint32_t M2Renderer::createInstance(uint32_t modelId, const glm::vec3& position,
         for (const auto& existing : instances) {
             if (existing.modelId == modelId && !existing.boneMatrices.empty()) {
                 instance.boneMatrices = existing.boneMatrices;
-                instance.bonesDirty = true;
+                instance.bonesDirty[0] = instance.bonesDirty[1] = true;
                 break;
             }
         }
@@ -1791,7 +1791,7 @@ uint32_t M2Renderer::createInstanceWithMatrix(uint32_t modelId, const glm::mat4&
         for (const auto& existing : instances) {
             if (existing.modelId == modelId && !existing.boneMatrices.empty()) {
                 instance.boneMatrices = existing.boneMatrices;
-                instance.bonesDirty = true;
+                instance.bonesDirty[0] = instance.bonesDirty[1] = true;
                 break;
             }
         }
@@ -1951,7 +1951,7 @@ static void computeBoneMatrices(const M2ModelGPU& model, M2Instance& instance) {
             instance.boneMatrices[i] = local;
         }
     }
-    instance.bonesDirty = true;
+    instance.bonesDirty[0] = instance.bonesDirty[1] = true;
 }
 
 void M2Renderer::update(float deltaTime, const glm::vec3& cameraPos, const glm::mat4& viewProjection) {
@@ -2237,6 +2237,11 @@ void M2Renderer::prepareRender(uint32_t frameIndex, const Camera& camera) {
                             &instance.boneBuffer[frameIndex], &instance.boneAlloc[frameIndex], &allocInfo);
             instance.boneMapped[frameIndex] = allocInfo.pMappedData;
 
+            // Force dirty so current boneMatrices get copied into this
+            // newly-allocated buffer during render (prevents garbage/zero
+            // bones when the other frame index already cleared bonesDirty).
+            instance.bonesDirty[frameIndex] = true;
+
             instance.boneSet[frameIndex] = allocateBoneSet();
             if (instance.boneSet[frameIndex]) {
                 VkDescriptorBufferInfo bufInfo{};
@@ -2426,12 +2431,13 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
         }
         bool useBones = needsBones;
         if (useBones) {
-            // Upload bone matrices only when recomputed (skip frame-skipped instances)
-            if (instance.bonesDirty && instance.boneMapped[frameIndex]) {
+            // Upload bone matrices only when recomputed (per-frame-index tracking
+            // ensures both double-buffered SSBOs get the latest bone data)
+            if (instance.bonesDirty[frameIndex] && instance.boneMapped[frameIndex]) {
                 int numBones = std::min(static_cast<int>(instance.boneMatrices.size()), 128);
                 memcpy(instance.boneMapped[frameIndex], instance.boneMatrices.data(),
                        numBones * sizeof(glm::mat4));
-                instance.bonesDirty = false;
+                instance.bonesDirty[frameIndex] = false;
             }
 
             // Bind bone descriptor set (set 2)

@@ -194,7 +194,7 @@ struct M2Instance {
 
     // Frame-skip optimization (update distant animations less frequently)
     uint8_t frameSkipCounter = 0;
-    bool bonesDirty = false;  // Set when bones recomputed, cleared after upload
+    bool bonesDirty[2] = {false, false};  // Per-frame-index: set when bones recomputed, cleared after upload
 
     // Per-instance bone SSBO (double-buffered)
     ::VkBuffer boneBuffer[2] = {};
