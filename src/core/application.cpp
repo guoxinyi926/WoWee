@@ -4207,53 +4207,8 @@ void Application::loadOnlineWorldTerrain(uint32_t mapId, float x, float y, float
             processPlayerSpawnQueue();
 
             // During load screen warmup: lift per-frame budgets so GPU uploads
-            // happen in bulk while the loading screen is still visible.
-            // Process ALL async creature model uploads (no 3-per-frame cap).
-            {
-                for (auto it = asyncCreatureLoads_.begin(); it != asyncCreatureLoads_.end(); ) {
-                    if (!it->future.valid() ||
-                        it->future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
-                        ++it;
-                        continue;
-                    }
-                    auto result = it->future.get();
-                    it = asyncCreatureLoads_.erase(it);
-                    if (result.permanent_failure) {
-                        nonRenderableCreatureDisplayIds_.insert(result.displayId);
-                        creaturePermanentFailureGuids_.insert(result.guid);
-                        pendingCreatureSpawnGuids_.erase(result.guid);
-                        creatureSpawnRetryCounts_.erase(result.guid);
-                        continue;
-                    }
-                    if (!result.valid || !result.model) {
-                        pendingCreatureSpawnGuids_.erase(result.guid);
-                        creatureSpawnRetryCounts_.erase(result.guid);
-                        continue;
-                    }
-                    auto* charRenderer = renderer ? renderer->getCharacterRenderer() : nullptr;
-                    if (!charRenderer) { pendingCreatureSpawnGuids_.erase(result.guid); continue; }
-                    if (!charRenderer->loadModel(*result.model, result.modelId)) {
-                        nonRenderableCreatureDisplayIds_.insert(result.displayId);
-                        creaturePermanentFailureGuids_.insert(result.guid);
-                        pendingCreatureSpawnGuids_.erase(result.guid);
-                        creatureSpawnRetryCounts_.erase(result.guid);
-                        continue;
-                    }
-                    displayIdModelCache_[result.displayId] = result.modelId;
-                    pendingCreatureSpawnGuids_.erase(result.guid);
-                    creatureSpawnRetryCounts_.erase(result.guid);
-                    if (!creatureInstances_.count(result.guid) &&
-                        !creaturePermanentFailureGuids_.count(result.guid)) {
-                        PendingCreatureSpawn s{};
-                        s.guid = result.guid; s.displayId = result.displayId;
-                        s.x = result.x; s.y = result.y; s.z = result.z;
-                        s.orientation = result.orientation;
-                        pendingCreatureSpawns_.push_back(s);
-                        pendingCreatureSpawnGuids_.insert(result.guid);
-                    }
-                }
-            }
-            processCreatureSpawnQueue();
+            // and spawns happen in bulk while the loading screen is still visible.
+            processCreatureSpawnQueue(true);  // unlimited: no model upload cap, no time budget
             processAsyncNpcCompositeResults();
             processDeferredEquipmentQueue();
             if (auto* cr = renderer ? renderer->getCharacterRenderer() : nullptr) {
@@ -6804,9 +6759,10 @@ void Application::spawnOnlineGameObject(uint64_t guid, uint32_t entry, uint32_t 
              " displayId=", displayId, " at (", x, ", ", y, ", ", z, ")");
 }
 
-void Application::processAsyncCreatureResults() {
+void Application::processAsyncCreatureResults(bool unlimited) {
     // Check completed async model loads and finalize on main thread (GPU upload + instance creation).
     // Limit GPU model uploads per frame to avoid spikes, but always drain cheap bookkeeping.
+    // In unlimited mode (load screen), process all pending uploads without cap.
     static constexpr int kMaxModelUploadsPerFrame = 1;
     int modelUploads = 0;
 
@@ -6819,9 +6775,7 @@ void Application::processAsyncCreatureResults() {
 
         // Peek: if this result needs a NEW model upload (not cached) and we've hit
         // the upload budget, defer to next frame without consuming the future.
-        if (modelUploads >= kMaxModelUploadsPerFrame) {
-            // Check if this displayId already has a cached model (cheap spawn, no GPU upload).
-            // We can't peek the displayId without getting the future, so just break.
+        if (!unlimited && modelUploads >= kMaxModelUploadsPerFrame) {
             break;
         }
 
@@ -6967,13 +6921,14 @@ void Application::processAsyncNpcCompositeResults() {
     }
 }
 
-void Application::processCreatureSpawnQueue() {
+void Application::processCreatureSpawnQueue(bool unlimited) {
     auto startTime = std::chrono::steady_clock::now();
     // Budget: max 2ms per frame for creature spawning to prevent stutter.
+    // In unlimited mode (load screen), process everything without budget cap.
     static constexpr float kSpawnBudgetMs = 2.0f;
 
     // First, finalize any async model loads that completed on background threads.
-    processAsyncCreatureResults();
+    processAsyncCreatureResults(unlimited);
     {
         auto now = std::chrono::steady_clock::now();
         float asyncMs = std::chrono::duration<float, std::milli>(now - startTime).count();
@@ -6992,11 +6947,11 @@ void Application::processCreatureSpawnQueue() {
     int asyncLaunched = 0;
     size_t rotationsLeft = pendingCreatureSpawns_.size();
     while (!pendingCreatureSpawns_.empty() &&
-           processed < MAX_SPAWNS_PER_FRAME &&
+           (unlimited || processed < MAX_SPAWNS_PER_FRAME) &&
            rotationsLeft > 0) {
         // Check time budget every iteration (including first — async results may
         // have already consumed the budget via GPU model uploads).
-        {
+        if (!unlimited) {
             auto now = std::chrono::steady_clock::now();
             float elapsedMs = std::chrono::duration<float, std::milli>(now - startTime).count();
             if (elapsedMs >= kSpawnBudgetMs) break;
@@ -7017,7 +6972,8 @@ void Application::processCreatureSpawnQueue() {
 
         // For new models: launch async load on background thread instead of blocking.
         if (needsNewModel) {
-            if (static_cast<int>(asyncCreatureLoads_.size()) + asyncLaunched >= MAX_ASYNC_CREATURE_LOADS) {
+            const int maxAsync = unlimited ? (MAX_ASYNC_CREATURE_LOADS * 4) : MAX_ASYNC_CREATURE_LOADS;
+            if (static_cast<int>(asyncCreatureLoads_.size()) + asyncLaunched >= maxAsync) {
                 // Too many in-flight — defer to next frame
                 pendingCreatureSpawns_.push_back(s);
                 rotationsLeft--;

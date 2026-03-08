@@ -215,7 +215,7 @@ private:
         std::future<PreparedCreatureModel> future;
     };
     std::vector<AsyncCreatureLoad> asyncCreatureLoads_;
-    void processAsyncCreatureResults();
+    void processAsyncCreatureResults(bool unlimited = false);
     static constexpr int MAX_ASYNC_CREATURE_LOADS = 4; // concurrent background loads
     std::unordered_set<uint64_t> deadCreatureGuids_;            // GUIDs that should spawn in corpse/death pose
     std::unordered_map<uint32_t, uint32_t> displayIdModelCache_; // displayId → modelId (model caching)
@@ -373,7 +373,7 @@ private:
     std::unordered_set<uint64_t> pendingPlayerSpawnGuids_;
     void processPlayerSpawnQueue();
     std::unordered_set<uint64_t> creaturePermanentFailureGuids_;
-    void processCreatureSpawnQueue();
+    void processCreatureSpawnQueue(bool unlimited = false);
 
     struct PendingGameObjectSpawn {
         uint64_t guid;
