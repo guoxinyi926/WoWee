@@ -2434,7 +2434,7 @@ void Renderer::update(float deltaTime) {
         cameraController->update(deltaTime);
         auto cameraEnd = std::chrono::steady_clock::now();
         lastCameraUpdateMs = std::chrono::duration<double, std::milli>(cameraEnd - cameraStart).count();
-        if (lastCameraUpdateMs > 3.0) {
+        if (lastCameraUpdateMs > 50.0) {
             LOG_WARNING("SLOW cameraController->update: ", lastCameraUpdateMs, "ms");
         }
 
@@ -2534,7 +2534,7 @@ void Renderer::update(float deltaTime) {
         terrainManager->update(*camera, deltaTime);
         float terrMs = std::chrono::duration<float, std::milli>(
             std::chrono::steady_clock::now() - terrStart).count();
-        if (terrMs > 5.0f) {
+        if (terrMs > 50.0f) {
             LOG_WARNING("SLOW terrainManager->update: ", terrMs, "ms");
         }
     }

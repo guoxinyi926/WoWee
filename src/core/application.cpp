@@ -868,7 +868,7 @@ void Application::update(float deltaTime) {
                 }
                 auto stageEnd = std::chrono::steady_clock::now();
                 float stageMs = std::chrono::duration<float, std::milli>(stageEnd - stageStart).count();
-                if (stageMs > 3.0f) {
+                if (stageMs > 50.0f) {
                     LOG_WARNING("SLOW update stage '", stageName, "': ", stageMs, "ms");
                 }
             };
@@ -913,29 +913,12 @@ void Application::update(float deltaTime) {
             inGameStep = "spawn/equipment queues";
             updateCheckpoint = "in_game: spawn/equipment queues";
             runInGameStage("spawn/equipment queues", [&] {
-                auto t0 = std::chrono::steady_clock::now();
                 processPlayerSpawnQueue();
-                auto t1 = std::chrono::steady_clock::now();
                 processCreatureSpawnQueue();
-                auto t2 = std::chrono::steady_clock::now();
                 processAsyncNpcCompositeResults();
-                auto t3 = std::chrono::steady_clock::now();
                 processDeferredEquipmentQueue();
-                auto t4 = std::chrono::steady_clock::now();
-                // Upload completed normal maps from background threads (~1-2ms each GPU upload)
                 if (auto* cr = renderer ? renderer->getCharacterRenderer() : nullptr) {
                     cr->processPendingNormalMaps(4);
-                }
-                auto t5 = std::chrono::steady_clock::now();
-                float pMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
-                float cMs = std::chrono::duration<float, std::milli>(t2 - t1).count();
-                float nMs = std::chrono::duration<float, std::milli>(t3 - t2).count();
-                float eMs = std::chrono::duration<float, std::milli>(t4 - t3).count();
-                float nmMs = std::chrono::duration<float, std::milli>(t5 - t4).count();
-                float total = pMs + cMs + nMs + eMs + nmMs;
-                if (total > 4.0f) {
-                    LOG_WARNING("spawn/equip breakdown: player=", pMs, "ms creature=", cMs,
-                                "ms npcComposite=", nMs, "ms equip=", eMs, "ms normalMaps=", nmMs, "ms");
                 }
             });
             // Self-heal missing creature visuals: if a nearby UNIT exists in
@@ -1514,7 +1497,7 @@ void Application::update(float deltaTime) {
         }
         float ruMs = std::chrono::duration<float, std::milli>(
             std::chrono::steady_clock::now() - rendererUpdateStart).count();
-        if (ruMs > 5.0f) {
+        if (ruMs > 50.0f) {
             LOG_WARNING("SLOW update stage 'renderer->update': ", ruMs, "ms");
         }
     }
@@ -5145,7 +5128,7 @@ void Application::spawnOnlineCreature(uint64_t guid, uint32_t displayId, float x
         {
             auto texEnd = std::chrono::steady_clock::now();
             float texMs = std::chrono::duration<float, std::milli>(texEnd - texStart).count();
-            if (texMs > 3.0f) {
+            if (texMs > 50.0f) {
                 LOG_WARNING("spawnCreature texture setup took ", texMs, "ms displayId=", displayId,
                             " hasPreDec=", hasPreDec, " extra=", dispData.extraDisplayId);
             }
@@ -6854,7 +6837,7 @@ void Application::processAsyncCreatureResults(bool unlimited) {
         {
             auto uploadEnd = std::chrono::steady_clock::now();
             float uploadMs = std::chrono::duration<float, std::milli>(uploadEnd - uploadStart).count();
-            if (uploadMs > 3.0f) {
+            if (uploadMs > 100.0f) {
                 LOG_WARNING("charRenderer->loadModel took ", uploadMs, "ms displayId=", result.displayId,
                             " preDecoded=", result.predecodedTextures.size());
             }
@@ -6968,7 +6951,7 @@ void Application::processCreatureSpawnQueue(bool unlimited) {
     {
         auto now = std::chrono::steady_clock::now();
         float asyncMs = std::chrono::duration<float, std::milli>(now - startTime).count();
-        if (asyncMs > 3.0f) {
+        if (asyncMs > 100.0f) {
             LOG_WARNING("processAsyncCreatureResults took ", asyncMs, "ms");
         }
     }
@@ -7265,7 +7248,7 @@ void Application::processCreatureSpawnQueue(bool unlimited) {
             spawnOnlineCreature(s.guid, s.displayId, s.x, s.y, s.z, s.orientation);
             auto spawnEnd = std::chrono::steady_clock::now();
             float spawnMs = std::chrono::duration<float, std::milli>(spawnEnd - spawnStart).count();
-            if (spawnMs > 3.0f) {
+            if (spawnMs > 100.0f) {
                 LOG_WARNING("spawnOnlineCreature took ", spawnMs, "ms displayId=", s.displayId);
             }
         }
